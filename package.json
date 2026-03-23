@@ -1,7 +1,6 @@
 {
   "name": "tapedit-telegram-bot",
   "version": "1.0.0",
-  "description": "Tapedit.ai Image Generation Telegram Bot",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"
@@ -10,7 +9,6 @@
     "node-telegram-bot-api": "^0.66.0",
     "playwright": "^1.42.0",
     "better-sqlite3": "^9.4.0",
-    "@libsql/client": "^0.6.0",
     "dotenv": "^16.4.0",
     "axios": "^1.6.0"
   },
