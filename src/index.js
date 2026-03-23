@@ -1,5 +1,6 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
+const http = require('http');
 const User = require('./models/User');
 const Generation = require('./models/Generation');
 const TapeditAutomation = require('./automation/tapedit');
@@ -11,8 +12,19 @@ const axios = require('axios');
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const BOT_USERNAME = process.env.BOT_USERNAME || 'tapedit_image_bot';
 const INITIAL_CREDITS = parseInt(process.env.INITIAL_CREDITS) || 5;
+const PORT = process.env.PORT || 8000;
 
 require('./database');
+
+// Health check server (Koyeb için gerekli)
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('OK');
+});
+
+server.listen(PORT, () => {
+  console.log(`✅ Health check server running on port ${PORT}`);
+});
 
 const bot = new TelegramBot(TOKEN, { polling: true, filepath: true });
 const tapedit = new TapeditAutomation();
@@ -74,7 +86,7 @@ bot.onText(/\/referral/, async (msg) => {
   const link = ReferralService.generateReferralLink(user.referral_code, BOT_USERNAME);
   const stats = ReferralService.getReferralStats(user.telegram_id);
   
-  await bot.sendMessage(chatId, 
+  await bot.sendMessage(msg.chat.id, 
     `🔗 *Referans Linkiniz:*\n\`${link}\`\n\n` +
     `📊 Toplam referans: ${stats.total_referrals}\n` +
     `💰 Kazanılan kredi: ${stats.total_credits_earned}`,
@@ -85,7 +97,7 @@ bot.onText(/\/referral/, async (msg) => {
 bot.onText(/\/balance/, async (msg) => {
   const user = await getOrCreateUser(msg);
   const stats = Generation.getStats(user.telegram_id);
-  await bot.sendMessage(chatId, `📊 Kalan Hak: *${user.credits}*\n📈 Toplam: ${stats.total}`, { parse_mode: 'Markdown' });
+  await bot.sendMessage(msg.chat.id, `📊 Kalan Hak: *${user.credits}*\n📈 Toplam: ${stats.total}`, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/cancel/, async (msg) => {
@@ -123,18 +135,20 @@ bot.on('message', async (msg) => {
   if (!user || user.state !== 'waiting_prompt' || !user.temp_image_url) return;
   
   const prompt = msg.text;
+  const imageUrl = user.temp_image_url;
   User.updateState(msg.from.id, 'processing', { temp_image_url: null, temp_file_id: null });
   
   await bot.sendMessage(msg.chat.id, `⏳ İşlem başladı...\n📝 Prompt: "${prompt}"`);
   
   try {
-    const imageResponse = await axios.get(user.temp_image_url, { responseType: 'arraybuffer' });
+    const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
     const imageBuffer = Buffer.from(imageResponse.data, 'binary');
     const tempPath = path.join(downloadsPath, `${msg.from.id}_${Date.now()}.jpg`);
     fs.writeFileSync(tempPath, imageBuffer);
     
     const result = await tapedit.generateImage(tempPath, prompt);
-    fs.unlinkSync(tempPath);
+    
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     
     if (result.success) {
       User.updateCredits(msg.from.id, -1);
