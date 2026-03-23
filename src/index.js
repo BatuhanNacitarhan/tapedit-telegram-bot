@@ -5,7 +5,9 @@ const User = require('./models/User');
 const Generation = require('./models/Generation');
 const TapeditAutomation = require('./automation/tapedit');
 const ReferralService = require('./services/referral');
+const queueService = require('./services/queue');
 const { initDatabase, dbHelper, isTurso } = require('./database');
+const { t, getUserLanguage, getLanguageKeyboard, getLanguageName } = require('./i18n');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
@@ -21,11 +23,11 @@ const VIP_USERS = ['wraith0_0', 'Irresistible_2'];
 const BOT_OWNER = 'GloriusSerpent';
 
 const STAR_PRODUCTS = {
-  'credits_3': { stars: 75, credits: 3, title: '3 Görsel Hakkı', description: '3 adet AI görsel üretme hakkı' },
-  'credits_5': { stars: 125, credits: 5, title: '5 Görsel Hakkı', description: '5 adet AI görsel üretme hakkı' },
-  'credits_10': { stars: 250, credits: 10, title: '10 Görsel Hakkı', description: '10 adet AI görsel üretme hakkı' },
-  'credits_20': { stars: 450, credits: 20, title: '20 Görsel Hakkı', description: '20 adet AI görsel üretme hakkı' },
-  'credits_50': { stars: 1000, credits: 50, title: '50 Görsel Hakkı', description: '50 adet AI görsel üretme hakkı' }
+  'credits_3': { stars: 75, credits: 3 },
+  'credits_5': { stars: 125, credits: 5 },
+  'credits_10': { stars: 250, credits: 10 },
+  'credits_20': { stars: 450, credits: 20 },
+  'credits_50': { stars: 1000, credits: 50 }
 };
 
 const hourlyStats = {};
@@ -64,13 +66,17 @@ function isVIPUser(username) {
   return VIP_USERS.includes(username?.replace('@', ''));
 }
 
-function getMainMenuKeyboard() {
+/**
+ * Dil destekli menü keyboard oluştur
+ */
+function getMainMenuKeyboard(lang = 'tr') {
   return {
     keyboard: [
-      ['🎨 Görsel Oluştur', '⭐ Hak Satın Al'],
-      ['📊 Hesabım', '🔗 Referansım'],
-      ['📜 Geçmiş', '📈 İstatistikler'],
-      ['❓ Yardım']
+      [t(lang, 'menu.generate'), t(lang, 'menu.buy')],
+      [t(lang, 'menu.account'), t(lang, 'menu.referral')],
+      [t(lang, 'menu.history'), t(lang, 'menu.stats')],
+      [t(lang, 'menu.daily_reward'), t(lang, 'menu.queue_status')],
+      [t(lang, 'menu.language'), t(lang, 'menu.help')]
     ],
     resize_keyboard: true,
     one_time_keyboard: false
@@ -190,6 +196,9 @@ async function setupBotCommands() {
       { command: 'referral', description: 'Referans linkini al' },
       { command: 'history', description: 'Görsel geçmişini göster' },
       { command: 'stats', description: 'İstatistikler (VIP)' },
+      { command: 'daily', description: 'Günlük ödül al' },
+      { command: 'queue', description: 'Sıra durumunu göster' },
+      { command: 'language', description: 'Dil değiştir' },
       { command: 'help', description: 'Yardım menüsü' }
     ]);
     console.log('✅ Bot komutları ayarlandı');
@@ -213,6 +222,9 @@ async function main() {
   console.log(`💰 Owner: @${BOT_OWNER}`);
   console.log(`📺 Kanal: ${STORAGE_CHANNEL_ID || 'Yok'}`);
   console.log(`⭐ Yıldız satın alma: Aktif`);
+  console.log(`🎁 Günlük ödül: Aktif`);
+  console.log(`🔢 Kuyruk sistemi: Aktif`);
+  console.log(`🌐 Çoklu dil: tr, en, ru, zh`);
   console.log(`🗄️ Database: ${isTurso() ? 'Turso (Cloud)' : 'Local SQLite'}`);
 }
 
@@ -228,6 +240,7 @@ bot.onText(/\/start(?: (.+))?/, async (msg, match) => {
     const isNewUser = !existingUser;
     
     let user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
+    const lang = getUserLanguage(user);
     
     if (isNewUser && referralCode) {
       const result = await ReferralService.processReferral(user.telegram_id, referralCode);
@@ -235,22 +248,22 @@ bot.onText(/\/start(?: (.+))?/, async (msg, match) => {
       if (result.success) {
         user = await User.findById(user.telegram_id);
         await bot.sendMessage(chatId, 
-          `🎉 <b>Referans bonusu!</b>\n✨ +${result.referred_bonus} hak kazandınız!`,
-          { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+          `🎉 <b>${t(lang, 'start.referral_bonus')}</b>\n✨ +${result.referred_bonus} ${t(lang, 'start.earned_credits')}`,
+          { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
         );
       }
     }
     
     const isVIP = isVIPUser(user.username);
     const isUnlimited = await User.hasUnlimitedCredits(user.telegram_id);
-    const creditDisplay = isUnlimited ? '∞ SINIRSIZ' : user.credits;
+    const creditDisplay = isUnlimited ? t(lang, 'general.unlimited') : user.credits;
     
     await bot.sendMessage(chatId, 
-      `🤖 <b>Tapedit AI Image Bot</b>${isVIP ? ' 👑 VIP' : ''}\n\n` +
-      `👤 Hoş geldiniz, @${escapeHtml(user.username)}!\n` +
-      `🎫 Kalan Hak: <b>${creditDisplay}</b>\n\n` +
-      `👇 Menüden seçim yapın:`,
-      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+      `🤖 <b>${t(lang, 'start.title')}</b>${isVIP ? ' ' + t(lang, 'general.vip_badge') : ''}\n\n` +
+      `👤 ${t(lang, 'start.welcome')}, @${escapeHtml(user.username)}!\n` +
+      `🎫 ${t(lang, 'start.credits_display')}: <b>${creditDisplay}</b>\n\n` +
+      `👇 ${t(lang, 'start.select_menu')}:`,
+      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
     );
   } catch (error) {
     console.error('Start hatası:', error);
@@ -267,168 +280,262 @@ bot.on('message', async (msg) => {
   if (msg.photo) return;
   
   const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
+  const lang = getUserLanguage(user);
   
+  // Menü butonlarını kontrol et
   switch (text) {
+    case t(lang, 'menu.generate'):
     case '🎨 Görsel Oluştur':
-      await handleGenerate(chatId, user);
+    case '🎨 Create Image':
+    case '🎨 Создать изображение':
+    case '🎨 创建图像':
+      await handleGenerate(chatId, user, lang);
       return;
+    case t(lang, 'menu.buy'):
     case '⭐ Hak Satın Al':
-      await handleBuy(chatId, user);
+    case '⭐ Buy Credits':
+    case '⭐ Купить кредиты':
+    case '⭐ 购买积分':
+      await handleBuy(chatId, user, lang);
       return;
+    case t(lang, 'menu.account'):
     case '📊 Hesabım':
-      await handleBalance(chatId, user);
+    case '📊 My Account':
+    case '📊 Мой аккаунт':
+    case '📊 我的账户':
+      await handleBalance(chatId, user, lang);
       return;
+    case t(lang, 'menu.referral'):
     case '🔗 Referansım':
-      await handleReferral(chatId, user);
+    case '🔗 My Referral':
+    case '🔗 Моя реферал':
+    case '🔗 我的推荐':
+      await handleReferral(chatId, user, lang);
       return;
+    case t(lang, 'menu.history'):
     case '📜 Geçmiş':
-      await handleHistory(chatId, user);
+    case '📜 History':
+    case '📜 История':
+    case '📜 历史':
+      await handleHistory(chatId, user, lang);
       return;
+    case t(lang, 'menu.stats'):
     case '📈 İstatistikler':
-      await handleStats(chatId, user);
+    case '📈 Statistics':
+    case '📈 Статистика':
+    case '📈 统计':
+      await handleStats(chatId, user, lang);
       return;
+    case t(lang, 'menu.daily_reward'):
+    case '🎁 Günlük Ödül':
+    case '🎁 Daily Reward':
+    case '🎁 Ежедневная награда':
+    case '🎁 每日奖励':
+      await handleDailyReward(chatId, user, lang);
+      return;
+    case t(lang, 'menu.queue_status'):
+    case '🔢 Sıramı Gör':
+    case '🔢 My Queue':
+    case '🔢 Моя очередь':
+    case '🔢 我的队列':
+      await handleQueueStatus(chatId, user, lang);
+      return;
+    case t(lang, 'menu.language'):
+    case '🌐 Dil Seç':
+    case '🌐 Language':
+    case '🌐 Язык':
+    case '🌐 语言':
+      await handleLanguageSelect(chatId, user, lang);
+      return;
+    case t(lang, 'menu.help'):
     case '❓ Yardım':
-      await handleHelp(chatId);
+    case '❓ Help':
+    case '❓ Помощь':
+    case '❓ 帮助':
+      await handleHelp(chatId, lang);
       return;
   }
   
   // Prompt bekleniyorsa
   if (user.state === 'waiting_prompt' && user.temp_image_url) {
-    await processPrompt(msg, user);
+    await processPrompt(msg, user, lang);
   }
 });
 
 // Komutlar
 bot.onText(/\/generate/, async (msg) => {
   const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
-  await handleGenerate(msg.chat.id, user);
+  const lang = getUserLanguage(user);
+  await handleGenerate(msg.chat.id, user, lang);
 });
 
 bot.onText(/\/buy/, async (msg) => {
   const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
-  await handleBuy(msg.chat.id, user);
+  const lang = getUserLanguage(user);
+  await handleBuy(msg.chat.id, user, lang);
 });
 
 bot.onText(/\/balance/, async (msg) => {
   const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
-  await handleBalance(msg.chat.id, user);
+  const lang = getUserLanguage(user);
+  await handleBalance(msg.chat.id, user, lang);
 });
 
 bot.onText(/\/referral/, async (msg) => {
   const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
-  await handleReferral(msg.chat.id, user);
+  const lang = getUserLanguage(user);
+  await handleReferral(msg.chat.id, user, lang);
 });
 
 bot.onText(/\/history/, async (msg) => {
   const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
-  await handleHistory(msg.chat.id, user);
+  const lang = getUserLanguage(user);
+  await handleHistory(msg.chat.id, user, lang);
 });
 
 bot.onText(/\/stats/, async (msg) => {
   const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
-  await handleStats(msg.chat.id, user);
+  const lang = getUserLanguage(user);
+  await handleStats(msg.chat.id, user, lang);
+});
+
+bot.onText(/\/daily/, async (msg) => {
+  const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
+  const lang = getUserLanguage(user);
+  await handleDailyReward(msg.chat.id, user, lang);
+});
+
+bot.onText(/\/queue/, async (msg) => {
+  const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
+  const lang = getUserLanguage(user);
+  await handleQueueStatus(msg.chat.id, user, lang);
+});
+
+bot.onText(/\/language/, async (msg) => {
+  const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
+  const lang = getUserLanguage(user);
+  await handleLanguageSelect(msg.chat.id, user, lang);
 });
 
 bot.onText(/\/help/, async (msg) => {
-  await handleHelp(msg.chat.id);
+  const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
+  const lang = getUserLanguage(user);
+  await handleHelp(msg.chat.id, lang);
 });
 
 bot.onText(/\/cancel/, async (msg) => {
+  const user = await User.findById(msg.from.id);
+  const lang = getUserLanguage(user);
+  
+  // Kuyruktan kaldır
+  queueService.cancel(msg.from.id);
+  
   await User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
-  await bot.sendMessage(msg.chat.id, '✅ İşlem iptal edildi.', { reply_markup: getMainMenuKeyboard() });
+  await bot.sendMessage(msg.chat.id, `✅ ${t(lang, 'errors.operation_cancelled')}`, { reply_markup: getMainMenuKeyboard(lang) });
 });
 
 // ========== HANDLER FONKSİYONLARI ==========
 
-async function handleGenerate(chatId, user) {
+async function handleGenerate(chatId, user, lang) {
   const isUnlimited = await User.hasUnlimitedCredits(user.telegram_id);
   
   if (!isUnlimited && user.credits <= 0) {
     return await bot.sendMessage(chatId, 
-      '❌ <b>Hakkınız kalmadı!</b>\n\n⭐ Hak Satın Al butonuna tıklayın.',
-      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+      `❌ <b>${t(lang, 'generate.no_credits')}</b>\n\n⭐ ${t(lang, 'generate.buy_credits')}`,
+      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
     );
   }
   
   await User.updateState(user.telegram_id, 'waiting_image');
   
   await bot.sendMessage(chatId, 
-    `📸 <b>Görüntü Oluşturma Modu</b>${isVIPUser(user.username) ? ' 👑 VIP' : ''}\n\n` +
-    'Lütfen düzenlemek istediğiniz görseli gönderin.\n❌ İptal: /cancel',
+    `📸 <b>${t(lang, 'generate.mode_title')}</b>${isVIPUser(user.username) ? ' ' + t(lang, 'general.vip_badge') : ''}\n\n` +
+    `${t(lang, 'generate.send_image')}.\n❌ ${t(lang, 'generate.cancel_hint')}: /cancel`,
     { parse_mode: 'HTML' }
   );
 }
 
-async function handleBuy(chatId, user) {
+async function handleBuy(chatId, user, lang) {
   const isVIP = isVIPUser(user.username);
   const isUnlimited = await User.hasUnlimitedCredits(user.telegram_id);
   
-  let message = `⭐ <b>YILDIZ İLE HAK SATIN AL</b>${isVIP ? '\n\n👑 VIP statünüz var!' : ''}\n\n`;
-  message += `🎫 Mevcut Hak: <b>${isUnlimited ? '∞ SINIRSIZ' : user.credits}</b>\n\n📦 <b>Paketler:</b>\n\n`;
+  let message = `⭐ <b>${t(lang, 'buy.title')}</b>${isVIP ? '\n\n👑 ' + t(lang, 'buy.vip_status') : ''}\n\n`;
+  message += `🎫 ${t(lang, 'buy.current_credits')}: <b>${isUnlimited ? t(lang, 'general.unlimited') : user.credits}</b>\n\n📦 <b>${t(lang, 'buy.packages')}:</b>\n\n`;
   
-  Object.entries(STAR_PRODUCTS).forEach(([id, p], i) => {
-    message += `${i + 1}. ${p.title}\n   ⭐ ${p.stars} Yıldız → 🎫 ${p.credits} Hak\n\n`;
-  });
+  const packages = {
+    'credits_3': { stars: 75, credits: 3 },
+    'credits_5': { stars: 125, credits: 5 },
+    'credits_10': { stars: 250, credits: 10 },
+    'credits_20': { stars: 450, credits: 20 },
+    'credits_50': { stars: 1000, credits: 50 }
+  };
   
-  message += '👇 Paket seçin:';
+  let i = 1;
+  for (const [id, p] of Object.entries(packages)) {
+    const pkgName = t(lang, `packages.${id}.title`);
+    message += `${i}. ${pkgName}\n   ⭐ ${p.stars} ${t(lang, 'buy.stars')} → 🎫 ${p.credits} ${t(lang, 'general.credits')}\n\n`;
+    i++;
+  }
+  
+  message += `👇 ${t(lang, 'buy.select_package')}:`;
   
   const keyboard = {
     inline_keyboard: [
       [
-        { text: '🎫 3 Hak - 75⭐', callback_data: 'buy_credits_3' },
-        { text: '🎫 5 Hak - 125⭐', callback_data: 'buy_credits_5' }
+        { text: '🎫 3 - 75⭐', callback_data: 'buy_credits_3' },
+        { text: '🎫 5 - 125⭐', callback_data: 'buy_credits_5' }
       ],
       [
-        { text: '🎫 10 Hak - 250⭐', callback_data: 'buy_credits_10' },
-        { text: '🎫 20 Hak - 450⭐', callback_data: 'buy_credits_20' }
+        { text: '🎫 10 - 250⭐', callback_data: 'buy_credits_10' },
+        { text: '🎫 20 - 450⭐', callback_data: 'buy_credits_20' }
       ],
-      [{ text: '🎫 50 Hak - 1000⭐', callback_data: 'buy_credits_50' }]
+      [{ text: '🎫 50 - 1000⭐', callback_data: 'buy_credits_50' }]
     ]
   };
   
   await bot.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: keyboard });
 }
 
-async function handleBalance(chatId, user) {
+async function handleBalance(chatId, user, lang) {
   const stats = await Generation.getStats(user.telegram_id);
   const isUnlimited = await User.hasUnlimitedCredits(user.telegram_id);
   const isVIP = isVIPUser(user.username);
   
   await bot.sendMessage(chatId, 
-    `📊 <b>Hesap Durumunuz</b>${isVIP ? ' 👑 VIP' : ''}\n\n` +
+    `📊 <b>${t(lang, 'account.title')}</b>${isVIP ? ' ' + t(lang, 'general.vip_badge') : ''}\n\n` +
     `👤 @${escapeHtml(user.username)}\n` +
-    `🎫 Kalan Hak: <b>${isUnlimited ? '∞ SINIRSIZ' : user.credits}</b>\n` +
-    `📈 Toplam: ${stats.total} | ✅ ${stats.completed} | ❌ ${stats.failed}\n` +
-    `📅 Kayıt: ${new Date(user.created_at).toLocaleDateString('tr-TR')}`,
-    { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+    `🎫 ${t(lang, 'account.remaining_credits')}: <b>${isUnlimited ? t(lang, 'general.unlimited') : user.credits}</b>\n` +
+    `📈 ${t(lang, 'general.total')}: ${stats.total} | ✅ ${stats.completed} | ❌ ${stats.failed}\n` +
+    `📅 ${t(lang, 'account.registration_date')}: ${new Date(user.created_at).toLocaleDateString('tr-TR')}`,
+    { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
   );
 }
 
-async function handleReferral(chatId, user) {
+async function handleReferral(chatId, user, lang) {
   const code = ReferralService.getReferralCode(user.telegram_id);
   const link = ReferralService.generateReferralLink(code, BOT_USERNAME);
   const stats = await ReferralService.getReferralStats(user.telegram_id);
   
   await bot.sendMessage(chatId, 
-    `🔗 <b>Referans Sistemi</b>\n\n` +
-    `📋 Kod: <code>${code}</code>\n` +
-    `🔗 Link:\n<code>${link}</code>\n\n` +
-    `💰 <b>Nasıl Çalışır?</b>\n` +
-    `• Linkinizle gelen: +1 hak\n` +
-    `• Siz: +1 hak\n\n` +
-    `📊 Toplam referans: ${stats.total_referrals}`,
-    { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+    `🔗 <b>${t(lang, 'referral.title')}</b>\n\n` +
+    `📋 ${t(lang, 'referral.code')}: <code>${code}</code>\n` +
+    `🔗 ${t(lang, 'referral.link')}:\n<code>${link}</code>\n\n` +
+    `💰 <b>${t(lang, 'referral.how_works')}</b>\n` +
+    `• ${t(lang, 'referral.link_comer')}: +1 ${t(lang, 'general.credits')}\n` +
+    `• ${t(lang, 'referral.you_get')}: +1 ${t(lang, 'general.credits')}\n\n` +
+    `📊 ${t(lang, 'referral.total_referrals')}: ${stats.total_referrals}`,
+    { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
   );
 }
 
-async function handleHistory(chatId, user) {
+async function handleHistory(chatId, user, lang) {
   const history = await Generation.getUserHistory(user.telegram_id, 10);
   
   if (history.length === 0) {
-    return await bot.sendMessage(chatId, '📭 Henüz görsel geçmişiniz yok.', { reply_markup: getMainMenuKeyboard() });
+    return await bot.sendMessage(chatId, `📭 ${t(lang, 'history.empty')}.`, { reply_markup: getMainMenuKeyboard(lang) });
   }
   
-  let message = `📚 <b>Son ${history.length} Görseliniz:</b>\n\n`;
+  let message = `📚 <b>${t(lang, 'history.title')}:</b>\n\n`;
   
   history.forEach((item, i) => {
     const status = item.status === 'completed' ? '✅' : '❌';
@@ -436,35 +543,115 @@ async function handleHistory(chatId, user) {
     message += `${i + 1}. ${status} "${escapeHtml(shortPrompt)}" | ⏱️ ${item.processing_time?.toFixed(1) || '-'}s\n`;
   });
   
-  await bot.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() });
+  await bot.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) });
 }
 
-async function handleStats(chatId, user) {
+async function handleStats(chatId, user, lang) {
   if (!isVIPUser(user.username) && user.username !== BOT_OWNER) {
-    return await bot.sendMessage(chatId, '⛔ Bu komut sadece VIP ve bot sahibi için.', { reply_markup: getMainMenuKeyboard() });
+    return await bot.sendMessage(chatId, `⛔ ${t(lang, 'stats.vip_only')}.`, { reply_markup: getMainMenuKeyboard(lang) });
   }
   
-  await bot.sendMessage(chatId, `📈 İstatistikler: ${Object.keys(hourlyStats).length} saatlik veri mevcut.`, { reply_markup: getMainMenuKeyboard() });
+  const queueStats = queueService.getStats();
+  await bot.sendMessage(chatId, 
+    `📈 ${t(lang, 'stats.title')}:\n` +
+    `📊 ${Object.keys(hourlyStats).length} ${t(lang, 'stats.data_available')}\n` +
+    `🔢 Kuyruk: ${queueStats.queueLength} bekleyen, ${queueStats.processingCount} işlenen`,
+    { reply_markup: getMainMenuKeyboard(lang) }
+  );
 }
 
-async function handleHelp(chatId) {
+async function handleDailyReward(chatId, user, lang) {
+  const check = await User.canClaimDailyReward(user.telegram_id);
+  
+  if (check.canClaim) {
+    // Ödül alınabilir - buton göster
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: t(lang, 'daily.claim_button'), callback_data: 'claim_daily' }]
+      ]
+    };
+    
+    await bot.sendMessage(chatId, 
+      `🎁 <b>${t(lang, 'daily.title')}</b>\n\n` +
+      `✅ ${t(lang, 'daily.claim_button')}!\n` +
+      `🎫 +1 ${t(lang, 'general.credits')}`,
+      { parse_mode: 'HTML', reply_markup: keyboard }
+    );
+  } else if (check.reason === 'vip') {
+    await bot.sendMessage(chatId, 
+      `👑 ${t(lang, 'general.vip_badge')}\n\n` +
+      `${t(lang, 'general.unlimited')}!`,
+      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
+    );
+  } else {
+    // Süre dolmamış - kalan süre göster
+    const timeStr = check.remainingHours > 0 
+      ? `${check.remainingHours} ${t(lang, 'daily.in_hours')}`
+      : `${check.remainingMinutes} ${t(lang, 'daily.in_minutes')}`;
+    
+    await bot.sendMessage(chatId, 
+      `🎁 <b>${t(lang, 'daily.title')}</b>\n\n` +
+      `⏳ ${t(lang, 'daily.already_claimed')}\n\n` +
+      `🕐 ${t(lang, 'daily.next_reward')}: ${timeStr}`,
+      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
+    );
+  }
+}
+
+async function handleQueueStatus(chatId, user, lang) {
+  const status = queueService.getStatus(user.telegram_id);
+  const stats = queueService.getStats();
+  
+  let message = `🔢 <b>${t(lang, 'queue.title')}</b>\n\n`;
+  
+  if (status.status === 'processing') {
+    message += `🔄 ${t(lang, 'queue.processing_now')}!\n`;
+    message += `⏱️ ${Math.round(status.elapsed)}s ${t(lang, 'general.seconds')}`;
+  } else if (status.status === 'queued') {
+    message += `📥 ${t(lang, 'queue.in_queue')}\n\n`;
+    message += `📍 ${t(lang, 'queue.position')}: <b>${status.position}</b>\n`;
+    message += `👥 ${status.position - 1} ${t(lang, 'queue.people_ahead')}\n`;
+    message += `⏱️ ${t(lang, 'queue.estimated_wait')}: ~${status.estimatedWait} ${t(lang, 'queue.minutes')}`;
+  } else {
+    message += `✅ ${t(lang, 'queue.not_in_queue')}.\n\n`;
+    message += `📊 ${t(lang, 'stats.title')}:\n`;
+    message += `• ${t(lang, 'queue.processing_now')}: ${stats.processingCount}\n`;
+    message += `• Kuyruk: ${stats.queueLength}`;
+  }
+  
+  await bot.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) });
+}
+
+async function handleLanguageSelect(chatId, user, lang) {
   await bot.sendMessage(chatId, 
-    `📚 <b>Yardım</b>\n\n` +
-    `🤖 AI görüntü düzenleme botu.\n\n` +
-    `📋 <b>Komutlar:</b>\n` +
-    `/start - Başlat\n` +
-    `/generate - Görsel oluştur\n` +
-    `/buy - Yıldız ile satın al\n` +
-    `/balance - Hak durumunuz\n` +
-    `/referral - Referans linki\n` +
-    `/history - Geçmiş\n` +
-    `/help - Yardım\n\n` +
-    `💡 <b>Kullanım:</b>\n` +
-    `1. Görsel Oluştur'a tıklayın\n` +
-    `2. Görsel gönderin\n` +
-    `3. Prompt yazın\n` +
-    `4. Sonucu bekleyin`,
-    { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+    `🌐 <b>${t(lang, 'language.title')}</b>\n\n` +
+    `${t(lang, 'language.current')}: ${getLanguageName(lang)}\n\n` +
+    `${t(lang, 'language.select_new')}:`,
+    { parse_mode: 'HTML', reply_markup: getLanguageKeyboard() }
+  );
+}
+
+async function handleHelp(chatId, lang) {
+  await bot.sendMessage(chatId, 
+    `📚 <b>${t(lang, 'help.title')}</b>\n\n` +
+    `🤖 ${t(lang, 'help.bot_description')}.\n\n` +
+    `📋 <b>${t(lang, 'help.commands_title')}:</b>\n` +
+    `/start - ${t(lang, 'commands.start')}\n` +
+    `/generate - ${t(lang, 'commands.generate')}\n` +
+    `/buy - ${t(lang, 'commands.buy')}\n` +
+    `/balance - ${t(lang, 'commands.balance')}\n` +
+    `/referral - ${t(lang, 'commands.referral')}\n` +
+    `/history - ${t(lang, 'commands.history')}\n` +
+    `/daily - ${t(lang, 'commands.daily')}\n` +
+    `/queue - ${t(lang, 'commands.queue')}\n` +
+    `/language - ${t(lang, 'commands.language')}\n` +
+    `/help - ${t(lang, 'commands.help')}\n\n` +
+    `💡 <b>${t(lang, 'help.usage_title')}:</b>\n` +
+    `1. ${t(lang, 'help.usage_step1')}\n` +
+    `2. ${t(lang, 'help.usage_step2')}\n` +
+    `3. ${t(lang, 'help.usage_step3')}\n` +
+    `4. ${t(lang, 'help.usage_step4')}`,
+    { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
   );
 }
 
@@ -473,9 +660,10 @@ async function handleHelp(chatId) {
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
   const user = await User.findById(msg.from.id);
+  const lang = getUserLanguage(user);
   
   if (!user || user.state !== 'waiting_image') {
-    return await bot.sendMessage(chatId, '⚠️ Önce <b>Görsel Oluştur</b> butonuna tıklayın.', { parse_mode: 'HTML' });
+    return await bot.sendMessage(chatId, `⚠️ ${t(lang, 'errors.no_image')}.`, { parse_mode: 'HTML' });
   }
   
   const photo = msg.photo[msg.photo.length - 1];
@@ -498,13 +686,13 @@ bot.on('photo', async (msg) => {
   }
   
   await bot.sendMessage(chatId, 
-    '✅ Görsel alındı!\n\n📝 Ne yapılmasını istediğinizi yazın.\n❌ İptal: /cancel'
+    `✅ ${t(lang, 'generate.image_received')}!\n\n📝 ${t(lang, 'generate.write_prompt')}.\n❌ ${t(lang, 'generate.cancel_hint')}: /cancel`
   );
 });
 
 // ========== PROMPT İŞLEME ==========
 
-async function processPrompt(msg, user) {
+async function processPrompt(msg, user, lang) {
   const chatId = msg.chat.id;
   const prompt = msg.text;
   const isVIP = isVIPUser(user.username);
@@ -512,13 +700,30 @@ async function processPrompt(msg, user) {
   
   if (!isUnlimited && user.credits <= 0) {
     await User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
-    return await bot.sendMessage(chatId, '❌ Hakkınız kalmadı!', { reply_markup: getMainMenuKeyboard() });
+    return await bot.sendMessage(chatId, `❌ ${t(lang, 'generate.no_credits')}!`, { reply_markup: getMainMenuKeyboard(lang) });
+  }
+  
+  // Kuyruğa ekle
+  const queueResult = queueService.enqueue(msg.from.id, { prompt, user });
+  
+  if (!queueResult.success && queueResult.message === 'already_in_queue') {
+    return await bot.sendMessage(chatId, 
+      `📥 ${t(lang, 'queue.queue_info')}.\n📍 ${t(lang, 'queue.position')}: ${queueResult.position}`,
+      { reply_markup: getMainMenuKeyboard(lang) }
+    );
+  }
+  
+  if (!queueResult.success && queueResult.message === 'already_processing') {
+    return await bot.sendMessage(chatId, 
+      `🔄 ${t(lang, 'queue.processing_now')}!`,
+      { reply_markup: getMainMenuKeyboard(lang) }
+    );
   }
   
   await User.updateState(msg.from.id, 'processing', { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
   
   const statusMsg = await bot.sendMessage(chatId, 
-    `⏳ <b>İşlem başladı...</b>${isVIP ? ' 👑 VIP' : ''}\n\n📝 "${escapeHtml(prompt)}"`,
+    `📥 ${t(lang, 'queue.queue_info')}\n📍 ${t(lang, 'queue.position')}: ${queueResult.position}\n⏱️ ~${queueResult.estimatedWait} ${t(lang, 'queue.minutes')}\n\n📝 "${escapeHtml(prompt)}"`,
     { parse_mode: 'HTML' }
   );
   
@@ -526,6 +731,36 @@ async function processPrompt(msg, user) {
   const startTime = Date.now();
   
   try {
+    // Kuyruktan sıra bekle
+    while (true) {
+      const item = queueService.dequeue();
+      if (item && item.userId === msg.from.id) {
+        break; // Sıra bizim
+      }
+      
+      // Başkası işleniyor, bekle
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Durum güncelle
+      const currentStatus = queueService.getStatus(msg.from.id);
+      if (currentStatus.status === 'queued') {
+        try {
+          await bot.editMessageText(
+            `📥 ${t(lang, 'queue.queue_info')}\n📍 ${t(lang, 'queue.position')}: ${currentStatus.position}\n⏱️ ~${currentStatus.estimatedWait} ${t(lang, 'queue.minutes')}\n\n📝 "${escapeHtml(prompt)}"`,
+            { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'HTML' }
+          );
+        } catch (e) {}
+      }
+    }
+    
+    // İşlem başladı
+    try {
+      await bot.editMessageText(
+        `⏳ <b>${t(lang, 'generate.processing_started')}</b>${isVIP ? ' ' + t(lang, 'general.vip_badge') : ''}\n\n📝 "${escapeHtml(prompt)}"`,
+        { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'HTML' }
+      );
+    } catch (e) {}
+    
     let inputBuffer;
     if (user.temp_image_buffer) {
       inputBuffer = Buffer.from(user.temp_image_buffer, 'base64');
@@ -549,6 +784,7 @@ async function processPrompt(msg, user) {
     if (result.success) {
       await User.updateCredits(msg.from.id, -1);
       await User.updateState(msg.from.id, null);
+      queueService.complete(msg.from.id, true);
       
       const updatedUser = await User.findById(msg.from.id);
       await sendOutputToChannel(result.imageBuffer, prompt, user.username, msg.from.id, inputMessageId, processingTime);
@@ -562,10 +798,10 @@ async function processPrompt(msg, user) {
         processing_time: processingTime
       });
       
-      const creditDisplay = await User.hasUnlimitedCredits(msg.from.id) ? '∞ SINIRSIZ' : updatedUser.credits;
+      const creditDisplay = await User.hasUnlimitedCredits(msg.from.id) ? t(lang, 'general.unlimited') : updatedUser.credits;
       
       await bot.sendDocument(chatId, result.imageBuffer, {
-        caption: `✅ Hazır!\n⏱️ ${processingTime.toFixed(1)}s\n🎫 Kalan: ${creditDisplay}`,
+        caption: `✅ ${t(lang, 'generate.result_ready')}!\n⏱️ ${processingTime.toFixed(1)}s\n🎫 ${t(lang, 'general.remaining')}: ${creditDisplay}`,
         filename: `result_${Date.now()}.jpg`
       });
       
@@ -577,6 +813,7 @@ async function processPrompt(msg, user) {
     console.error('İşlem hatası:', error);
     
     await User.updateState(msg.from.id, null);
+    queueService.complete(msg.from.id, false);
     await sendErrorToChannel(prompt, user.username, msg.from.id, error.message, inputMessageId);
     
     await Generation.create({
@@ -590,38 +827,95 @@ async function processPrompt(msg, user) {
     try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
     
     await bot.sendMessage(chatId, 
-      `😔 <b>Hata oluştu</b>\n\n🔄 Tekrar deneyin: /generate`,
-      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+      `😔 <b>${t(lang, 'generate.error_occurred')}</b>\n\n🔄 ${t(lang, 'generate.try_again')}: /generate`,
+      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
     );
   }
 }
 
-// ========== YILDIZ ÖDEME ==========
+// ========== CALLBACK QUERY İŞLEYİCİLERİ ==========
 
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const data = query.data;
+  const userId = query.from.id;
   
+  // Günlük ödül alma
+  if (data === 'claim_daily') {
+    const user = await User.findById(userId);
+    const lang = getUserLanguage(user);
+    
+    const result = await User.claimDailyReward(userId);
+    
+    if (result.success) {
+      await bot.answerCallbackQuery(query.id, { 
+        text: `🎉 ${t(lang, 'daily.claim_success')}! +1 ${t(lang, 'general.credits')}`,
+        show_alert: true 
+      });
+      
+      await bot.editMessageText(
+        `🎁 <b>${t(lang, 'daily.title')}</b>\n\n` +
+        `✅ ${t(lang, 'daily.claim_success')}!\n` +
+        `🎫 ${t(lang, 'daily.earned_credit')}\n` +
+        `📊 ${t(lang, 'general.total')}: ${result.newCredits}`,
+        { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
+      );
+    } else {
+      await bot.answerCallbackQuery(query.id, { 
+        text: `⏳ ${t(lang, 'daily.already_claimed')}`,
+        show_alert: true 
+      });
+    }
+    return;
+  }
+  
+  // Dil değiştirme
+  if (data.startsWith('lang_')) {
+    const newLang = data.replace('lang_', '');
+    await User.setLanguage(userId, newLang);
+    
+    await bot.answerCallbackQuery(query.id, { 
+      text: `✅ ${t(newLang, 'language.changed')} ${getLanguageName(newLang)}`,
+      show_alert: false 
+    });
+    
+    await bot.editMessageText(
+      `🌐 <b>${t(newLang, 'language.title')}</b>\n\n` +
+      `✅ ${t(newLang, 'language.changed')}!\n` +
+      `${t(newLang, 'language.current')}: ${getLanguageName(newLang)}`,
+      { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(newLang) }
+    );
+    return;
+  }
+  
+  // Satın alma
   if (data.startsWith('buy_credits_')) {
+    const user = await User.findById(userId);
+    const lang = getUserLanguage(user);
     const productId = data.replace('buy_', '');
     const product = STAR_PRODUCTS[productId];
     
     if (!product) {
-      return await bot.answerCallbackQuery(query.id, { text: 'Ürün bulunamadı!', show_alert: true });
+      return await bot.answerCallbackQuery(query.id, { text: t(lang, 'buy.product_not_found'), show_alert: true });
     }
     
     try {
-      await bot.sendInvoice(chatId, product.title, product.description, 
-        `stars_${query.from.id}_${productId}`, '', 'XTR', 
-        [{ label: product.title, amount: product.stars }]
+      const title = t(lang, `packages.${productId}.title`);
+      const description = t(lang, `packages.${productId}.description`);
+      
+      await bot.sendInvoice(chatId, title, description, 
+        `stars_${userId}_${productId}`, '', 'XTR', 
+        [{ label: title, amount: product.stars }]
       );
-      await bot.answerCallbackQuery(query.id, { text: 'Ödeme açılıyor...' });
+      await bot.answerCallbackQuery(query.id, { text: t(lang, 'buy.payment_opening') });
     } catch (error) {
       console.error('Invoice hatası:', error.message);
-      await bot.answerCallbackQuery(query.id, { text: 'Hata: ' + error.message, show_alert: true });
+      await bot.answerCallbackQuery(query.id, { text: `${t(lang, 'general.error')}: ${error.message}`, show_alert: true });
     }
   }
 });
+
+// ========== YILDIZ ÖDEME ==========
 
 bot.on('successful_payment', async (msg) => {
   const chatId = msg.chat.id;
@@ -630,6 +924,9 @@ bot.on('successful_payment', async (msg) => {
   const payment = msg.successful_payment;
   
   console.log('💰 Ödeme:', payment);
+  
+  const user = await User.findById(userId);
+  const lang = getUserLanguage(user);
   
   const parts = payment.invoice_payload.split('_');
   if (parts.length >= 4) {
@@ -643,8 +940,8 @@ bot.on('successful_payment', async (msg) => {
       const updatedUser = await User.findById(userId);
       
       await bot.sendMessage(chatId, 
-        `🎉 <b>Ödeme Başarılı!</b>\n\n⭐ ${product.stars} Yıldız\n🎫 ${product.credits} Hak\n📊 Toplam: ${updatedUser.credits}`,
-        { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+        `🎉 <b>${t(lang, 'buy.payment_success')}</b>!\n\n⭐ ${product.stars} ${t(lang, 'buy.stars')}\n🎫 ${product.credits} ${t(lang, 'general.credits')}\n📊 ${t(lang, 'general.total')}: ${updatedUser.credits}`,
+        { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
       );
       return;
     }
@@ -657,8 +954,8 @@ bot.on('successful_payment', async (msg) => {
     const updatedUser = await User.findById(userId);
     
     await bot.sendMessage(chatId, 
-      `🎉 <b>Ödeme Başarılı!</b>\n🎫 ${credits} Hak eklendi\n📊 Toplam: ${updatedUser.credits}`,
-      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+      `🎉 <b>${t(lang, 'buy.payment_success')}</b>!\n🎫 ${credits} ${t(lang, 'buy.added_credits')}\n📊 ${t(lang, 'general.total')}: ${updatedUser.credits}`,
+      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
     );
   }
 });
