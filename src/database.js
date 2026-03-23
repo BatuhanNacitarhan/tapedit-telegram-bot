@@ -6,6 +6,7 @@ const db = new Database(dbPath);
 
 db.pragma('journal_mode = WAL');
 
+// Users tablosu
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -14,6 +15,7 @@ db.exec(`
     credits INTEGER DEFAULT 5,
     referral_code TEXT UNIQUE,
     referred_by INTEGER DEFAULT NULL,
+    is_unlimited INTEGER DEFAULT 0,
     state TEXT DEFAULT NULL,
     temp_image_url TEXT DEFAULT NULL,
     temp_file_id TEXT DEFAULT NULL,
@@ -22,12 +24,16 @@ db.exec(`
   )
 `);
 
+// Generations tablosu (görsel kayıtları)
 db.exec(`
   CREATE TABLE IF NOT EXISTS generations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
+    username TEXT,
     prompt TEXT NOT NULL,
+    input_file_id TEXT,
     input_image_url TEXT,
+    output_file_id TEXT,
     output_image_url TEXT,
     status TEXT DEFAULT 'pending',
     error_message TEXT,
@@ -37,9 +43,32 @@ db.exec(`
   )
 `);
 
+// Indexler
 db.exec(`CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_generations_user_id ON generations(user_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_generations_created_at ON generations(created_at)`);
+
+// is_unlimited kolonu yoksa ekle
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN is_unlimited INTEGER DEFAULT 0`);
+} catch (e) {
+  // Kolon zaten var, hata yoksay
+}
+
+// output_file_id ve output_image_url kolonları yoksa ekle
+try {
+  db.exec(`ALTER TABLE generations ADD COLUMN input_file_id TEXT`);
+} catch (e) {}
+try {
+  db.exec(`ALTER TABLE generations ADD COLUMN output_file_id TEXT`);
+} catch (e) {}
+try {
+  db.exec(`ALTER TABLE generations ADD COLUMN output_image_url TEXT`);
+} catch (e) {}
+try {
+  db.exec(`ALTER TABLE generations ADD COLUMN username TEXT`);
+} catch (e) {}
 
 console.log('✅ SQLite başlatıldı');
 
