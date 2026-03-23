@@ -1,5 +1,5 @@
-const db = require('../database');
 const crypto = require('crypto');
+const { dbHelper, isTurso } = require('../database');
 
 // Sınırsız hak sahibi kullanıcılar
 const UNLIMITED_USERS = ['wraith0_0', 'Irresistible_2'];
@@ -7,7 +7,7 @@ const UNLIMITED_USERS = ['wraith0_0', 'Irresistible_2'];
 class User {
   static async findOrCreate(telegramId, username = '') {
     // Önce kullanıcıyı kontrol et
-    let user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegramId);
+    let user = await dbHelper.get('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
     
     if (!user) {
       // YENİ KULLANICI - İlk kez kayıt oluyor
@@ -19,22 +19,26 @@ class User {
         .toUpperCase();
       
       // Sınırsız hak kontrolü
-      const isUnlimited = UNLIMITED_USERS.includes(username.replace('@', ''));
+      const cleanUsername = username.replace('@', '');
+      const isUnlimited = UNLIMITED_USERS.includes(cleanUsername);
       const initialCredits = isUnlimited ? 999999 : 5;
       
-      db.prepare(`
-        INSERT INTO users (telegram_id, username, credits, referral_code, is_unlimited)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(telegramId, username, initialCredits, referralCode, isUnlimited ? 1 : 0);
+      await dbHelper.run(
+        `INSERT INTO users (telegram_id, username, credits, referral_code, is_unlimited)
+         VALUES (?, ?, ?, ?, ?)`,
+        [telegramId, username, initialCredits, referralCode, isUnlimited ? 1 : 0]
+      );
       
-      user = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegramId);
+      user = await dbHelper.get('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
       console.log(`👤 YENİ kullanıcı: ${username} | Kredi: ${initialCredits}${isUnlimited ? ' (SINIRSIZ)' : ''}`);
     } else {
       // MEVCUT KULLANICI - Krediyi SIFIRLAMA!
       // Sadece username güncelle (değişmiş olabilir)
       if (username && user.username !== username) {
-        db.prepare('UPDATE users SET username = ?, last_active = CURRENT_TIMESTAMP WHERE telegram_id = ?')
-          .run(username, telegramId);
+        await dbHelper.run(
+          'UPDATE users SET username = ?, last_active = CURRENT_TIMESTAMP WHERE telegram_id = ?',
+          [username, telegramId]
+        );
       }
       console.log(`👤 Mevcut kullanıcı: ${user.username} | Kredi: ${user.credits}`);
     }
@@ -42,19 +46,19 @@ class User {
     return user;
   }
   
-  static findById(telegramId) {
-    return db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegramId);
+  static async findById(telegramId) {
+    return await dbHelper.get('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
   }
   
-  static findByUsername(username) {
-    return db.prepare('SELECT * FROM users WHERE username = ?').get(username.replace('@', ''));
+  static async findByUsername(username) {
+    return await dbHelper.get('SELECT * FROM users WHERE username = ?', [username.replace('@', '')]);
   }
   
-  static findByReferralCode(code) {
-    return db.prepare('SELECT * FROM users WHERE referral_code = ?').get(code);
+  static async findByReferralCode(code) {
+    return await dbHelper.get('SELECT * FROM users WHERE referral_code = ?', [code]);
   }
   
-  static updateState(telegramId, state, extras = {}) {
+  static async updateState(telegramId, state, extras = {}) {
     const updates = ['state = ?', 'last_active = CURRENT_TIMESTAMP'];
     const values = [state];
     
@@ -72,11 +76,11 @@ class User {
     }
     
     values.push(telegramId);
-    db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE telegram_id = ?`).run(...values);
+    await dbHelper.run(`UPDATE users SET ${updates.join(', ')} WHERE telegram_id = ?`, values);
   }
   
-  static updateCredits(telegramId, change) {
-    const user = this.findById(telegramId);
+  static async updateCredits(telegramId, change) {
+    const user = await this.findById(telegramId);
     
     // Sınırsız kullanıcılar için kredi düşürme
     if (user && user.is_unlimited === 1) {
@@ -84,18 +88,32 @@ class User {
       return;
     }
     
-    db.prepare('UPDATE users SET credits = credits + ?, last_active = CURRENT_TIMESTAMP WHERE telegram_id = ?')
-      .run(change, telegramId);
+    await dbHelper.run(
+      'UPDATE users SET credits = credits + ?, last_active = CURRENT_TIMESTAMP WHERE telegram_id = ?',
+      [change, telegramId]
+    );
   }
   
-  static setReferredBy(telegramId, referredBy) {
-    db.prepare('UPDATE users SET referred_by = ? WHERE telegram_id = ?')
-      .run(referredBy, telegramId);
+  static async setReferredBy(telegramId, referredBy) {
+    await dbHelper.run(
+      'UPDATE users SET referred_by = ? WHERE telegram_id = ?',
+      [referredBy, telegramId]
+    );
   }
   
-  static hasUnlimitedCredits(telegramId) {
-    const user = this.findById(telegramId);
+  static async hasUnlimitedCredits(telegramId) {
+    const user = await this.findById(telegramId);
     return user && user.is_unlimited === 1;
+  }
+  
+  // Sync wrapper'lar (eski kodlarla uyumluluk için)
+  static findByIdSync(telegramId) {
+    if (isTurso()) {
+      throw new Error('Turso kullanırken async metodları kullanın');
+    }
+    // Local SQLite için senkron erişim
+    const db = require('../database').getDb();
+    return db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegramId);
   }
 }
 
