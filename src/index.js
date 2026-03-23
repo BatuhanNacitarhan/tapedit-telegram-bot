@@ -12,6 +12,7 @@ const axios = require('axios');
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const BOT_USERNAME = process.env.BOT_USERNAME || 'GrokAi_ImageBot';
 const PORT = process.env.PORT || 8000;
+const KOYEB_URL = process.env.KOYEB_URL || null; // Sleep mode'u önlemek için
 
 // Görsel kayıt kanalı ID
 const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID || null;
@@ -25,7 +26,7 @@ const VIP_USERS = ['wraith0_0', 'Irresistible_2'];
 // Bot Sahibi (Yıldız ödemeleri bu hesaba)
 const BOT_OWNER = 'GloriusSerpent';
 
-// Telegram Stars Ürün Fiyatları (3 hak = 75 yıldız baz alınarak)
+// Telegram Stars Ürün Fiyatları
 const STAR_PRODUCTS = {
   'credits_3': { stars: 75, credits: 3, title: '3 Görsel Hakkı', description: '3 adet AI görsel üretme hakkı kazan' },
   'credits_5': { stars: 125, credits: 5, title: '5 Görsel Hakkı', description: '5 adet AI görsel üretme hakkı kazan' },
@@ -58,6 +59,30 @@ const dataPath = path.join(__dirname, '..', 'data');
 
 if (!fs.existsSync(downloadsPath)) fs.mkdirSync(downloadsPath, { recursive: true });
 if (!fs.existsSync(dataPath)) fs.mkdirSync(dataPath, { recursive: true });
+
+// ========== KEEP-ALIVE (Sleep Mode Önleme) ==========
+
+// Her 30 dakikada bir kendi URL'sine ping at (Koyeb sleep mode'u önler)
+if (KOYEB_URL) {
+  setInterval(async () => {
+    try {
+      await axios.get(KOYEB_URL);
+      console.log('🔄 Keep-alive ping gönderildi');
+    } catch (error) {
+      console.log('⚠️ Keep-alive ping hatası:', error.message);
+    }
+  }, 30 * 60 * 1000); // 30 dakika
+  console.log(`🔄 Keep-alive aktif: ${KOYEB_URL}`);
+}
+
+// Telegram API'ye de periyodik istek (yedek)
+setInterval(async () => {
+  try {
+    await bot.getMe();
+  } catch (error) {
+    console.log('⚠️ Telegram keep-alive hatası');
+  }
+}, 25 * 60 * 1000); // 25 dakika
 
 // ========== BOT KOMUTLARINI AYARLA ==========
 
@@ -500,8 +525,8 @@ async function handleReferral(chatId, user) {
     `📋 Kodunuz: <code>${referralCode}</code>\n` +
     `🔗 Linkiniz:\n<code>${link}</code>\n\n` +
     `💰 <b>Nasıl Çalışır?</b>\n` +
-    `• Linkinizle gelen: +${process.env.REFERRED_BONUS || 2} hak\n` +
-    `• Siz (referans sahibi): +${process.env.REFERRER_BONUS || 3} hak\n\n` +
+    `• Linkinizle gelen: +1 hak\n` +
+    `• Siz (referans sahibi): +1 hak\n\n` +
     `📊 <b>İstatistikleriniz:</b>\n` +
     `• Toplam referans: ${stats.total_referrals}\n` +
     `• Kazanılan kredi: ${stats.total_credits_earned}`,
