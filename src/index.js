@@ -5,7 +5,6 @@ const User = require('./models/User');
 const Generation = require('./models/Generation');
 const TapeditAutomation = require('./automation/tapedit');
 const ReferralService = require('./services/referral');
-const queueService = require('./services/queue');
 const { initDatabase, dbHelper, isTurso } = require('./database');
 const { t, getUserLanguage, getLanguageKeyboard, getLanguageName } = require('./i18n');
 const fs = require('fs');
@@ -30,8 +29,86 @@ const STAR_PRODUCTS = {
   'credits_50': { stars: 1000, credits: 50 }
 };
 
-const hourlyStats = {};
-const dailyStats = {};
+// ========== KUYRUK SİSTEMİ (IN-MEMORY) ==========
+const queueData = {
+  queue: [],
+  processing: new Map(),
+  averageProcessTime: 45
+};
+
+function queueEnqueue(userId, data) {
+  const existingIndex = queueData.queue.findIndex(item => item.userId === userId);
+  if (existingIndex !== -1) {
+    return { success: false, position: existingIndex + 1, message: 'already_in_queue', estimatedWait: existingIndex * 45 };
+  }
+  if (queueData.processing.has(userId)) {
+    return { success: false, position: 0, message: 'already_processing', estimatedWait: 0 };
+  }
+  
+  const queueItem = { userId, data, enqueuedAt: Date.now(), id: `${userId}_${Date.now()}` };
+  queueData.queue.push(queueItem);
+  const position = queueData.queue.length;
+  console.log(`📥 Kuyruk: +${userId} | Pozisyon: ${position}`);
+  
+  return { success: true, position, message: 'added_to_queue', estimatedWait: (position - 1) * 45, queueId: queueItem.id };
+}
+
+function queueDequeue() {
+  if (queueData.queue.length === 0) return null;
+  if (queueData.processing.size >= 1) return null;
+  
+  const item = queueData.queue.shift();
+  item.startedAt = Date.now();
+  queueData.processing.set(item.userId, item);
+  return item;
+}
+
+function queueComplete(userId) {
+  queueData.processing.delete(userId);
+}
+
+function queueCancel(userId) {
+  const index = queueData.queue.findIndex(item => item.userId === userId);
+  if (index !== -1) {
+    queueData.queue.splice(index, 1);
+    return true;
+  }
+  if (queueData.processing.has(userId)) {
+    queueData.processing.delete(userId);
+    return true;
+  }
+  return false;
+}
+
+function queueGetStatus(userId) {
+  if (queueData.processing.has(userId)) {
+    const item = queueData.processing.get(userId);
+    const elapsed = (Date.now() - item.startedAt) / 1000;
+    return { status: 'processing', position: 0, elapsed, message: 'processing_now' };
+  }
+  
+  const position = queueData.queue.findIndex(item => item.userId === userId);
+  if (position !== -1) {
+    return {
+      status: 'queued',
+      position: position + 1,
+      estimatedWait: position * queueData.averageProcessTime,
+      totalInQueue: queueData.queue.length,
+      message: 'in_queue'
+    };
+  }
+  
+  return { status: 'not_in_queue', position: 0, message: 'not_in_queue' };
+}
+
+function queueGetStats() {
+  return {
+    queueLength: queueData.queue.length,
+    processingCount: queueData.processing.size
+  };
+}
+
+// ========== SETUP ==========
 
 const downloadsPath = path.join(__dirname, '..', 'downloads');
 if (!fs.existsSync(downloadsPath)) fs.mkdirSync(downloadsPath, { recursive: true });
@@ -49,7 +126,7 @@ server.listen(PORT, () => {
 const bot = new TelegramBot(TOKEN, { polling: true, filepath: true });
 const tapedit = new TapeditAutomation();
 
-// ========== YARDIMCIII FONKSİYONLAR ==========
+// ========== YARDIMCI FONKSİYONLAR ==========
 
 function escapeHtml(text) {
   if (!text) return '';
@@ -80,12 +157,6 @@ async function sendInputToChannel(inputBuffer, prompt, username, userId) {
   if (!STORAGE_CHANNEL_ID) return null;
   try {
     const isVIP = isVIPUser(username);
-    if (isVIP) {
-      await bot.sendMessage(STORAGE_CHANNEL_ID, 
-        `👑 <b>VIP KULLANICI AKTİF</b>\n👤 @${escapeHtml(username)}`,
-        { parse_mode: 'HTML' }
-      );
-    }
     const headerCaption = `🆕 <b>YENİ İSTEK</b>\n👤 @${escapeHtml(username)}${isVIP ? ' 👑' : ''}`;
     const message = await bot.sendDocument(STORAGE_CHANNEL_ID, inputBuffer, {
       caption: headerCaption,
@@ -108,13 +179,12 @@ async function sendOutputToChannel(outputBuffer, prompt, username, userId, input
   try {
     const isVIP = isVIPUser(username);
     const headerCaption = `✅ <b>SONUÇ</b>\n👤 @${escapeHtml(username)}${isVIP ? ' 👑' : ''} | ⏱️ ${processingTime.toFixed(1)}s`;
-    const message = await bot.sendDocument(STORAGE_CHANNEL_ID, outputBuffer, {
+    return await bot.sendDocument(STORAGE_CHANNEL_ID, outputBuffer, {
       caption: headerCaption,
       parse_mode: 'HTML',
       filename: `output_${userId}_${Date.now()}.jpg`,
       reply_to_message_id: inputMessageId
     });
-    return message;
   } catch (error) {
     console.error('❌ Output hatası:', error.message);
     return null;
@@ -145,9 +215,7 @@ async function sendPurchaseToChannel(username, userId, credits, stars) {
 
 if (KOYEB_URL) {
   setInterval(async () => {
-    try {
-      await axios.get(KOYEB_URL);
-    } catch (error) {}
+    try { await axios.get(KOYEB_URL); } catch (error) {}
   }, 30 * 60 * 1000);
 }
 
@@ -238,36 +306,35 @@ bot.on('message', async (msg) => {
   const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
   const lang = getUserLanguage(user);
   
-  const menuActions = {
-    'generate': ['🎨 Görsel Oluştur', '🎨 Create Image', '🎨 Создать изображение', '🎨 创建图像'],
-    'buy': ['⭐ Hak Satın Al', '⭐ Buy Credits', '⭐ Купить кредиты', '⭐ 购买积分'],
-    'account': ['📊 Hesabım', '📊 My Account', '📊 Мой аккаунт', '📊 我的账户'],
-    'referral': ['🔗 Referansım', '🔗 My Referral', '🔗 Моя реферал', '🔗 我的推荐'],
-    'history': ['📜 Geçmiş', '📜 History', '📜 История', '📜 历史'],
-    'stats': ['📈 İstatistikler', '📈 Statistics', '📈 Статистика', '📈 统计'],
-    'daily': ['🎁 Günlük Ödül', '🎁 Daily Reward', '🎁 Ежедневная награда', '🎁 每日奖励'],
-    'queue': ['🔢 Sıramı Gör', '🔢 My Queue', '🔢 Моя очередь', '🔢 我的队列'],
-    'language': ['🌐 Dil Seç', '🌐 Language', '🌐 Язык', '🌐 语言'],
-    'help': ['❓ Yardım', '❓ Help', '❓ Помощь', '❓ 帮助']
+  const menuMap = {
+    '🎨 Görsel Oluştur': 'generate', '🎨 Create Image': 'generate', '🎨 Создать изображение': 'generate', '🎨 创建图像': 'generate',
+    '⭐ Hak Satın Al': 'buy', '⭐ Buy Credits': 'buy', '⭐ Купить кредиты': 'buy', '⭐ 购买积分': 'buy',
+    '📊 Hesabım': 'account', '📊 My Account': 'account', '📊 Мой аккаунт': 'account', '📊 我的账户': 'account',
+    '🔗 Referansım': 'referral', '🔗 My Referral': 'referral', '🔗 Моя реферал': 'referral', '🔗 我的推荐': 'referral',
+    '📜 Geçmiş': 'history', '📜 History': 'history', '📜 История': 'history', '📜 历史': 'history',
+    '📈 İstatistikler': 'stats', '📈 Statistics': 'stats', '📈 Статистика': 'stats', '📈 统计': 'stats',
+    '🎁 Günlük Ödül': 'daily', '🎁 Daily Reward': 'daily', '🎁 Ежедневная награда': 'daily', '🎁 每日奖励': 'daily',
+    '🔢 Sıramı Gör': 'queue', '🔢 My Queue': 'queue', '🔢 Моя очередь': 'queue', '🔢 我的队列': 'queue',
+    '🌐 Dil Seç': 'language', '🌐 Language': 'language', '🌐 Язык': 'language', '🌐 语言': 'language',
+    '❓ Yardım': 'help', '❓ Help': 'help', '❓ Помощь': 'help', '❓ 帮助': 'help'
   };
   
-  for (const [action, texts] of Object.entries(menuActions)) {
-    if (texts.includes(text) || text === t(lang, `menu.${action}_reward`) || text === t(lang, `menu.${action}_status`) || text === t(lang, `menu.${action}`)) {
-      const handlers = {
-        'generate': () => handleGenerate(chatId, user, lang),
-        'buy': () => handleBuy(chatId, user, lang),
-        'account': () => handleBalance(chatId, user, lang),
-        'referral': () => handleReferral(chatId, user, lang),
-        'history': () => handleHistory(chatId, user, lang),
-        'stats': () => handleStats(chatId, user, lang),
-        'daily': () => handleDailyReward(chatId, user, lang),
-        'queue': () => handleQueueStatus(chatId, user, lang),
-        'language': () => handleLanguageSelect(chatId, user, lang),
-        'help': () => handleHelp(chatId, lang)
-      };
-      await handlers[action]();
-      return;
-    }
+  const action = menuMap[text];
+  if (action) {
+    const handlers = {
+      'generate': () => handleGenerate(chatId, user, lang),
+      'buy': () => handleBuy(chatId, user, lang),
+      'account': () => handleBalance(chatId, user, lang),
+      'referral': () => handleReferral(chatId, user, lang),
+      'history': () => handleHistory(chatId, user, lang),
+      'stats': () => handleStats(chatId, user, lang),
+      'daily': () => handleDailyReward(chatId, user, lang),
+      'queue': () => handleQueueStatus(chatId, user, lang),
+      'language': () => handleLanguageSelect(chatId, user, lang),
+      'help': () => handleHelp(chatId, lang)
+    };
+    await handlers[action]();
+    return;
   }
   
   // Prompt bekleniyorsa
@@ -325,7 +392,7 @@ bot.onText(/\/help/, async (msg) => {
 bot.onText(/\/cancel/, async (msg) => {
   const user = await User.findById(msg.from.id);
   const lang = getUserLanguage(user);
-  queueService.cancel(msg.from.id);
+  queueCancel(msg.from.id);
   await User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
   await bot.sendMessage(msg.chat.id, `✅ ${t(lang, 'errors.operation_cancelled')}`, { reply_markup: getMainMenuKeyboard(lang) });
 });
@@ -348,7 +415,6 @@ async function handleGenerate(chatId, user, lang) {
 }
 
 async function handleBuy(chatId, user, lang) {
-  const isVIP = isVIPUser(user.username);
   const isUnlimited = await User.hasUnlimitedCredits(user.telegram_id);
   
   let message = `⭐ <b>${t(lang, 'buy.title')}</b>\n\n`;
@@ -368,14 +434,8 @@ async function handleBuy(chatId, user, lang) {
   
   const keyboard = {
     inline_keyboard: [
-      [
-        { text: '🎫 3 - 75⭐', callback_data: 'buy_credits_3' },
-        { text: '🎫 5 - 125⭐', callback_data: 'buy_credits_5' }
-      ],
-      [
-        { text: '🎫 10 - 250⭐', callback_data: 'buy_credits_10' },
-        { text: '🎫 20 - 450⭐', callback_data: 'buy_credits_20' }
-      ],
+      [{ text: '🎫 3 - 75⭐', callback_data: 'buy_credits_3' }, { text: '🎫 5 - 125⭐', callback_data: 'buy_credits_5' }],
+      [{ text: '🎫 10 - 250⭐', callback_data: 'buy_credits_10' }, { text: '🎫 20 - 450⭐', callback_data: 'buy_credits_20' }],
       [{ text: '🎫 50 - 1000⭐', callback_data: 'buy_credits_50' }]
     ]
   };
@@ -431,43 +491,55 @@ async function handleStats(chatId, user, lang) {
   if (!isVIPUser(user.username) && user.username !== BOT_OWNER) {
     return await bot.sendMessage(chatId, `⛔ ${t(lang, 'stats.vip_only')}.`, { reply_markup: getMainMenuKeyboard(lang) });
   }
-  const queueStats = queueService.getStats();
+  const stats = queueGetStats();
   await bot.sendMessage(chatId, 
-    `📈 ${t(lang, 'stats.title')}\n🔢 Kuyruk: ${queueStats.queueLength} bekleyen`,
+    `📈 ${t(lang, 'stats.title')}\n🔢 Kuyruk: ${stats.queueLength} bekleyen, ${stats.processingCount} işlenen`,
     { reply_markup: getMainMenuKeyboard(lang) }
   );
 }
 
 async function handleDailyReward(chatId, user, lang) {
-  const check = await User.canClaimDailyReward(user.telegram_id);
-  
-  if (check.canClaim) {
-    const keyboard = {
-      inline_keyboard: [[{ text: t(lang, 'daily.claim_button'), callback_data: 'claim_daily' }]]
-    };
-    await bot.sendMessage(chatId, 
-      `🎁 <b>${t(lang, 'daily.title')}</b>\n\n✅ ${t(lang, 'daily.claim_button')}!\n🎫 +1 ${t(lang, 'general.credits')}`,
-      { parse_mode: 'HTML', reply_markup: keyboard }
-    );
-  } else if (check.reason === 'vip') {
-    await bot.sendMessage(chatId, 
-      `👑 ${t(lang, 'general.vip_badge')}\n\n${t(lang, 'general.unlimited')}!`,
-      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
-    );
-  } else {
-    const timeStr = check.remainingHours > 0 
+  try {
+    const check = await User.canClaimDailyReward(user.telegram_id);
+    
+    if (!check) {
+      return await bot.sendMessage(chatId, `❌ Hata oluştu.`, { reply_markup: getMainMenuKeyboard(lang) });
+    }
+    
+    if (check.canClaim === true) {
+      const keyboard = {
+        inline_keyboard: [[{ text: t(lang, 'daily.claim_button'), callback_data: 'claim_daily' }]]
+      };
+      return await bot.sendMessage(chatId, 
+        `🎁 <b>${t(lang, 'daily.title')}</b>\n\n✅ ${t(lang, 'daily.claim_button')}!\n🎫 +1 ${t(lang, 'general.credits')}`,
+        { parse_mode: 'HTML', reply_markup: keyboard }
+      );
+    }
+    
+    if (check.reason === 'vip') {
+      return await bot.sendMessage(chatId, 
+        `👑 ${t(lang, 'general.vip_badge')}\n\n${t(lang, 'general.unlimited')}!`,
+        { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
+      );
+    }
+    
+    const timeStr = (check.remainingHours > 0) 
       ? `${check.remainingHours} ${t(lang, 'daily.in_hours')}`
-      : `${check.remainingMinutes} ${t(lang, 'daily.in_minutes')}`;
+      : `${check.remainingMinutes || 0} ${t(lang, 'daily.in_minutes')}`;
+    
     await bot.sendMessage(chatId, 
       `🎁 <b>${t(lang, 'daily.title')}</b>\n\n⏳ ${t(lang, 'daily.already_claimed')}\n\n🕐 ${t(lang, 'daily.next_reward')}: ${timeStr}`,
       { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) }
     );
+  } catch (error) {
+    console.error('Daily reward hatası:', error);
+    await bot.sendMessage(chatId, `❌ Hata: ${error.message}`, { reply_markup: getMainMenuKeyboard(lang) });
   }
 }
 
 async function handleQueueStatus(chatId, user, lang) {
-  const status = queueService.getStatus(user.telegram_id);
-  const stats = queueService.getStats();
+  const status = queueGetStatus(user.telegram_id);
+  const stats = queueGetStats();
   
   let message = `🔢 <b>${t(lang, 'queue.title')}</b>\n\n`;
   
@@ -478,7 +550,7 @@ async function handleQueueStatus(chatId, user, lang) {
     message += `⏱️ ~${status.estimatedWait} ${t(lang, 'queue.minutes')}`;
   } else {
     message += `✅ ${t(lang, 'queue.not_in_queue')}.\n\n`;
-    message += `📊 Kuyruk: ${stats.queueLength}`;
+    message += `📊 Kuyruk: ${stats.queueLength} bekleyen`;
   }
   
   await bot.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(lang) });
@@ -554,7 +626,7 @@ async function processPrompt(msg, user, lang) {
   }
   
   // Kuyruğa ekle
-  const queueResult = queueService.enqueue(msg.from.id, { prompt, user });
+  const queueResult = queueEnqueue(msg.from.id, { prompt, user });
   
   if (!queueResult.success && queueResult.message === 'already_in_queue') {
     return await bot.sendMessage(chatId, 
@@ -579,12 +651,15 @@ async function processPrompt(msg, user, lang) {
   
   try {
     // Kuyruk bekle
-    while (true) {
-      const item = queueService.dequeue();
+    let maxWait = 300; // 5 dakika max
+    let waited = 0;
+    while (waited < maxWait) {
+      const item = queueDequeue();
       if (item && item.userId === msg.from.id) break;
       await new Promise(resolve => setTimeout(resolve, 2000));
+      waited += 2;
       
-      const currentStatus = queueService.getStatus(msg.from.id);
+      const currentStatus = queueGetStatus(msg.from.id);
       if (currentStatus.status === 'queued') {
         try {
           await bot.editMessageText(
@@ -625,7 +700,7 @@ async function processPrompt(msg, user, lang) {
     if (result.success) {
       await User.updateCredits(msg.from.id, -1);
       await User.updateState(msg.from.id, null);
-      queueService.complete(msg.from.id, true);
+      queueComplete(msg.from.id);
       
       const updatedUser = await User.findById(msg.from.id);
       await sendOutputToChannel(result.imageBuffer, prompt, user.username, msg.from.id, inputMessageId, processingTime);
@@ -652,7 +727,7 @@ async function processPrompt(msg, user, lang) {
   } catch (error) {
     console.error('İşlem hatası:', error);
     await User.updateState(msg.from.id, null);
-    queueService.complete(msg.from.id, false);
+    queueComplete(msg.from.id);
     await sendErrorToChannel(prompt, user.username, msg.from.id, error.message, inputMessageId);
     await Generation.create({ user_id: msg.from.id, username: user.username, prompt, status: 'failed', error_message: error.message });
     try { await bot.deleteMessage(chatId, statusMsg.message_id); } catch (e) {}
@@ -676,7 +751,7 @@ bot.on('callback_query', async (query) => {
     const lang = getUserLanguage(user);
     const result = await User.claimDailyReward(userId);
     
-    if (result.success) {
+    if (result && result.success) {
       await bot.answerCallbackQuery(query.id, { text: `🎉 +1 ${t(lang, 'general.credits')}!`, show_alert: true });
       await bot.sendMessage(chatId, 
         `🎁 ${t(lang, 'daily.claim_success')}!\n🎫 ${t(lang, 'daily.earned_credit')}\n📊 ${t(lang, 'general.total')}: ${result.newCredits}`,
@@ -694,13 +769,11 @@ bot.on('callback_query', async (query) => {
     await User.setLanguage(userId, newLang);
     await bot.answerCallbackQuery(query.id, { text: `✅ ${getLanguageName(newLang)}`, show_alert: false });
     
-    // Yeni mesaj gönder
     await bot.sendMessage(chatId, 
       `🌐 <b>${t(newLang, 'language.title')}</b>\n\n✅ ${t(newLang, 'language.changed')}!\n${t(newLang, 'language.current')}: ${getLanguageName(newLang)}`,
       { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(newLang) }
     );
     
-    // Eski mesajı sil
     try { await bot.deleteMessage(chatId, query.message.message_id); } catch (e) {}
     return;
   }
