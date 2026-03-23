@@ -13,8 +13,11 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const BOT_USERNAME = process.env.BOT_USERNAME || 'tapedit_image_bot';
 const PORT = process.env.PORT || 8000;
 
-// Görsel kayıt kanalı ID (ileri de ayarlanacak)
+// Görsel kayıt kanalı ID
 const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID || null;
+
+// Telegram caption limiti (document için 1024)
+const CAPTION_MAX_LENGTH = 1024;
 
 require('./database');
 
@@ -46,27 +49,100 @@ async function getOrCreateUser(msg) {
   return await User.findOrCreate(telegramId, username);
 }
 
-// Görseli depolama kanalına kaydet
-async function saveImageToChannel(imageBuffer, caption, userId) {
+// Caption'ı güvenli uzunluğa kısalt (sadece kullanıcıya giden mesajlar için)
+function truncateCaption(caption, maxLength = CAPTION_MAX_LENGTH) {
+  if (!caption) return '';
+  if (caption.length <= maxLength) return caption;
+  return caption.substring(0, maxLength - 3) + '...';
+}
+
+// Input görseli kanala gönder (her durumda) - PROMPT BİREBİR GÖNDERİLİR
+async function sendInputToChannel(inputBuffer, prompt, username, userId) {
   if (!STORAGE_CHANNEL_ID) {
-    console.log('⚠️ STORAGE_CHANNEL_ID ayarlanmamış, görsel kanala kaydedilmedi');
+    console.log('⚠️ STORAGE_CHANNEL_ID ayarlanmamış');
     return null;
   }
   
   try {
-    const message = await bot.sendPhoto(STORAGE_CHANNEL_ID, imageBuffer, {
-      caption: caption,
-      parse_mode: 'Markdown'
+    // Önce görseli minimal caption ile gönder
+    const headerCaption = `🆕 *YENİ İSTEK*\n\n👤 @${username} | 🆔 \`${userId}\``;
+    
+    const message = await bot.sendDocument(STORAGE_CHANNEL_ID, inputBuffer, {
+      caption: headerCaption,
+      parse_mode: 'Markdown',
+      filename: `input_${userId}_${Date.now()}.jpg`
     });
     
-    const fileId = message.photo[message.photo.length - 1].file_id;
-    const fileUrl = await bot.getFileLink(fileId);
+    // Prompt'u ayrı mesaj olarak gönder (BİREBİR, KESİLMEZ!)
+    await bot.sendMessage(STORAGE_CHANNEL_ID, 
+      `📝 *Prompt:*\n\n${prompt}`, 
+      { 
+        parse_mode: 'Markdown',
+        reply_to_message_id: message.message_id 
+      }
+    );
     
-    console.log(`📸 Görsel kanala kaydedildi: ${fileId}`);
-    
-    return { fileId, fileUrl, messageId: message.message_id };
+    console.log(`📥 Input görsel + prompt kanala gönderildi: ${userId}`);
+    return message;
   } catch (error) {
-    console.error('❌ Kanala kaydetme hatası:', error.message);
+    console.error('❌ Input kanala gönderme hatası:', error.message);
+    return null;
+  }
+}
+
+// Output görseli kanala gönder - PROMPT BİREBİR GÖNDERİLİR
+async function sendOutputToChannel(outputBuffer, prompt, username, userId, inputMessageId) {
+  if (!STORAGE_CHANNEL_ID) return null;
+  
+  try {
+    // Görseli minimal caption ile gönder
+    const headerCaption = `✅ *SONUÇ*\n\n👤 @${username} | 🆔 \`${userId}\``;
+    
+    const message = await bot.sendDocument(STORAGE_CHANNEL_ID, outputBuffer, {
+      caption: headerCaption,
+      parse_mode: 'Markdown',
+      filename: `output_${userId}_${Date.now()}.jpg`,
+      reply_to_message_id: inputMessageId
+    });
+    
+    // Prompt'u ayrı mesaj olarak gönder (BİREBİR, KESİLMEZ!)
+    await bot.sendMessage(STORAGE_CHANNEL_ID, 
+      `📝 *Prompt:*\n\n${prompt}`, 
+      { 
+        parse_mode: 'Markdown',
+        reply_to_message_id: message.message_id 
+      }
+    );
+    
+    console.log(`📤 Output görsel + prompt kanala gönderildi: ${userId}`);
+    return message;
+  } catch (error) {
+    console.error('❌ Output kanala gönderme hatası:', error.message);
+    return null;
+  }
+}
+
+// Hata durumunda kanala bilgi gönder - PROMPT BİREBİR GÖNDERİLİR
+async function sendErrorToChannel(prompt, username, userId, errorMessage, inputMessageId) {
+  if (!STORAGE_CHANNEL_ID) return null;
+  
+  try {
+    // Hata mesajı gönder (sendMessage limiti 4096 karakter - prompt sığar)
+    const message = await bot.sendMessage(STORAGE_CHANNEL_ID, 
+      `❌ *HATA*\n\n` +
+      `👤 @${username} | 🆔 \`${userId}\`\n\n` +
+      `📝 *Prompt:*\n\n${prompt}\n\n` +
+      `⚠️ *Hata:* ${errorMessage}`, 
+      {
+        parse_mode: 'Markdown',
+        reply_to_message_id: inputMessageId
+      }
+    );
+    
+    console.log(`❌ Hata mesajı + prompt kanala gönderildi: ${userId}`);
+    return message;
+  } catch (error) {
+    console.error('❌ Hata mesajı kanala gönderme hatası:', error.message);
     return null;
   }
 }
@@ -204,7 +280,7 @@ bot.onText(/\/history/, async (msg) => {
 });
 
 bot.onText(/\/cancel/, async (msg) => {
-  User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null });
+  User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
   await bot.sendMessage(msg.chat.id, '✅ İşlem iptal edildi.');
 });
 
@@ -242,10 +318,24 @@ bot.on('photo', async (msg) => {
   const photo = msg.photo[msg.photo.length - 1];
   const fileLink = await bot.getFileLink(photo.file_id);
   
-  User.updateState(msg.from.id, 'waiting_prompt', {
-    temp_image_url: fileLink,
-    temp_file_id: photo.file_id
-  });
+  // Görseli buffer olarak indir ve sakla
+  try {
+    const imageResponse = await axios.get(fileLink, { responseType: 'arraybuffer' });
+    const imageBuffer = Buffer.from(imageResponse.data, 'binary');
+    
+    // Buffer'ı base64 olarak sakla (SQLite'da)
+    User.updateState(msg.from.id, 'waiting_prompt', {
+      temp_image_url: fileLink,
+      temp_file_id: photo.file_id,
+      temp_image_buffer: imageBuffer.toString('base64')
+    });
+  } catch (error) {
+    console.error('Görsel indirme hatası:', error);
+    User.updateState(msg.from.id, 'waiting_prompt', {
+      temp_image_url: fileLink,
+      temp_file_id: photo.file_id
+    });
+  }
   
   await bot.sendMessage(chatId, 
     '✅ Görsel alındı!\n\n' +
@@ -264,27 +354,41 @@ bot.on('message', async (msg) => {
   const prompt = msg.text;
   const imageUrl = user.temp_image_url;
   const input_file_id = user.temp_file_id;
+  const inputBufferBase64 = user.temp_image_buffer;
   
   const isUnlimited = User.hasUnlimitedCredits(user.telegram_id);
   
   if (!isUnlimited && user.credits <= 0) {
-    User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null });
+    User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
     return await bot.sendMessage(msg.chat.id, '❌ Hakkınız kalmadı! /referral ile hak kazanın.');
   }
   
-  User.updateState(msg.from.id, 'processing', { temp_image_url: null, temp_file_id: null });
+  User.updateState(msg.from.id, 'processing', { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
   
   const statusMsg = await bot.sendMessage(msg.chat.id, 
     `⏳ *İşlem başladı...*\n\n📝 Prompt: "${prompt}"`,
     { parse_mode: 'Markdown' }
   );
   
+  let inputMessageId = null;
+  
   try {
-    // Görseli indir
-    const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
-    const imageBuffer = Buffer.from(imageResponse.data, 'binary');
+    // Input buffer'ı hazırla
+    let inputBuffer;
+    if (inputBufferBase64) {
+      inputBuffer = Buffer.from(inputBufferBase64, 'base64');
+    } else {
+      const imageResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+      inputBuffer = Buffer.from(imageResponse.data, 'binary');
+    }
+    
+    // ========== INPUT'U KANALA GÖNDER (HER DURUMDA, PROMPT BİREBİR) ==========
+    const inputMsg = await sendInputToChannel(inputBuffer, prompt, user.username, msg.from.id);
+    inputMessageId = inputMsg?.message_id;
+    
+    // Görseli dosyaya kaydet
     const tempPath = path.join(downloadsPath, `${msg.from.id}_${Date.now()}.jpg`);
-    fs.writeFileSync(tempPath, imageBuffer);
+    fs.writeFileSync(tempPath, inputBuffer);
     
     // Tapedit otomasyonu
     const result = await tapedit.generateImage(tempPath, prompt);
@@ -299,12 +403,8 @@ bot.on('message', async (msg) => {
       // GÜNCELLENMİŞ kullanıcı bilgisi
       const updatedUser = User.findById(msg.from.id);
       
-      // Görseli kanala kaydet
-      const savedImage = await saveImageToChannel(
-        result.imageBuffer,
-        `👤 @${user.username} | 📝 ${prompt.substring(0, 100)}`,
-        msg.from.id
-      );
+      // ========== OUTPUT'U KANALA GÖNDER (PROMPT BİREBİR) ==========
+      await sendOutputToChannel(result.imageBuffer, prompt, user.username, msg.from.id, inputMessageId);
       
       // Veritabanına kaydet
       Generation.create({
@@ -313,8 +413,8 @@ bot.on('message', async (msg) => {
         prompt,
         input_file_id,
         input_image_url: imageUrl,
-        output_file_id: savedImage?.fileId || null,
-        output_image_url: savedImage?.fileUrl || null,
+        output_file_id: null,
+        output_image_url: null,
         status: 'completed',
         processing_time: result.processingTime
       });
@@ -323,9 +423,11 @@ bot.on('message', async (msg) => {
         ? '∞ SINIRSIZ' 
         : updatedUser.credits;
       
-      await bot.sendPhoto(msg.chat.id, result.imageBuffer, {
-        caption: `✅ *Hazır!*\n\n📝 ${prompt}\n⏱️ ${result.processingTime.toFixed(1)}s\n🎫 Kalan: ${creditDisplay}`,
-        parse_mode: 'Markdown'
+      // Kullanıcıya gönder (sendDocument ile kalite korunsun)
+      await bot.sendDocument(msg.chat.id, result.imageBuffer, {
+        caption: truncateCaption(`✅ *Hazır!*\n\n📝 ${prompt}\n⏱️ ${result.processingTime.toFixed(1)}s\n🎫 Kalan: ${creditDisplay}`),
+        parse_mode: 'Markdown',
+        filename: `result_${Date.now()}.jpg`
       });
       
       // Status mesajını sil
@@ -335,7 +437,12 @@ bot.on('message', async (msg) => {
       throw new Error(result.error);
     }
   } catch (error) {
+    console.error('İşlem hatası:', error);
+    
     User.updateState(msg.from.id, null);
+    
+    // ========== HATA DURUMUNDA KANALA BİLGİ GÖNDER (PROMPT BİREBİR) ==========
+    await sendErrorToChannel(prompt, user.username, msg.from.id, error.message, inputMessageId);
     
     Generation.create({
       user_id: msg.from.id,
@@ -347,8 +454,15 @@ bot.on('message', async (msg) => {
       error_message: error.message
     });
     
+    // Status mesajını sil
+    try { await bot.deleteMessage(msg.chat.id, statusMsg.message_id); } catch (e) {}
+    
+    // Kullanıcıya GÜZEL bir hata mesajı gönder
     await bot.sendMessage(msg.chat.id, 
-      `❌ *Hata:* ${error.message}\n\n/generate ile tekrar deneyin.`,
+      `😔 *Üzgünüm, bir sorun oluştu*\n\n` +
+      `⚠️ Görseliniz işlenirken beklenmedik bir hata oluştu.\n\n` +
+      `🔄 Lütfen tekrar deneyin: /generate\n\n` +
+      `💬 Sorun devam ederse daha farklı bir prompt deneyebilirsiniz.`,
       { parse_mode: 'Markdown' }
     );
   }
@@ -357,6 +471,7 @@ bot.on('message', async (msg) => {
 console.log('🚀 Bot başlatıldı!');
 console.log(`🤖 @${BOT_USERNAME}`);
 console.log(`👑 Sınırsız kullanıcılar: ${UNLIMITED_USERS.join(', ')}`);
+console.log(`📺 Depolama kanalı: ${STORAGE_CHANNEL_ID || 'Ayarlanmadı'}`);
 
 bot.on('polling_error', console.error);
 process.on('unhandledRejection', console.error);
