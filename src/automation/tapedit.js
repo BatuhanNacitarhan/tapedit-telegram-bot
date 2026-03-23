@@ -1,4 +1,5 @@
 const { chromium } = require('playwright');
+const axios = require('axios');
 
 class TapeditAutomation {
   constructor() {
@@ -61,46 +62,112 @@ class TapeditAutomation {
       await page.waitForTimeout(5000);
       
       let resultImage = null;
+      let imageSrc = null;
+      
       for (let i = 0; i < 24; i++) {
         const images = await page.$$('img');
+        console.log(`📸 Bulunan görsel sayısı: ${images.length}`);
+        
         for (const img of images) {
           const src = await img.getAttribute('src');
-          if (src && !src.includes('upload') && !src.includes('placeholder')) {
+          const alt = await img.getAttribute('alt');
+          console.log(`🔍 Görsel: ${src ? src.substring(0, 50) + '...' : 'no-src'} | alt: ${alt || 'no-alt'}`);
+          
+          if (src && !src.includes('upload') && !src.includes('placeholder') && !src.includes('icon')) {
             const width = await img.evaluate(el => el.naturalWidth || el.width);
-            if (width > 100) { resultImage = img; break; }
+            const height = await img.evaluate(el => el.naturalHeight || el.height);
+            console.log(`📐 Boyutlar: ${width}x${height}`);
+            
+            if (width > 100 && height > 100) {
+              resultImage = img;
+              imageSrc = src;
+              console.log(`✅ Sonuç görseli bulundu!`);
+              break;
+            }
           }
         }
         if (resultImage) break;
         await page.waitForTimeout(5000);
-        console.log(`⏳ ${i * 5 + 5}s...`);
+        console.log(`⏳ ${i * 5 + 5}s bekleniyor...`);
       }
       
-      if (!resultImage) throw new Error('Sonuç bulunamadı');
+      if (!resultImage || !imageSrc) {
+        throw new Error('Sonuç görseli bulunamadı - timeout');
+      }
       
-      const imageSrc = await resultImage.getAttribute('src');
+      console.log(`📥 Görsel indiriliyor: ${imageSrc.substring(0, 80)}...`);
+      
       let imageBuffer;
+      
       if (imageSrc.startsWith('data:')) {
-        imageBuffer = Buffer.from(imageSrc.split(',')[1], 'base64');
+        // Base64 görsel
+        console.log('📦 Base64 formatında görsel');
+        const base64Data = imageSrc.split(',')[1];
+        if (!base64Data) throw new Error('Base64 data parsing hatası');
+        imageBuffer = Buffer.from(base64Data, 'base64');
+      } else if (imageSrc.startsWith('http://') || imageSrc.startsWith('https://')) {
+        // URL görsel - axios ile indir
+        console.log('🌐 URL formatında görsel, axios ile indiriliyor...');
+        const response = await axios.get(imageSrc, { 
+          responseType: 'arraybuffer',
+          timeout: 30000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        });
+        imageBuffer = Buffer.from(response.data, 'binary');
+      } else if (imageSrc.startsWith('blob:')) {
+        // Blob URL - sayfa üzerinden getir
+        console.log('🔮 Blob URL tespit edildi, alternatif yöntem...');
+        const imageData = await page.evaluate(async (blobUrl) => {
+          try {
+            const response = await fetch(blobUrl);
+            const blob = await response.blob();
+            return new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result);
+              reader.readAsDataURL(blob);
+            });
+          } catch (e) {
+            return null;
+          }
+        }, imageSrc);
+        
+        if (imageData && imageData.startsWith('data:')) {
+          const base64Data = imageData.split(',')[1];
+          imageBuffer = Buffer.from(base64Data, 'base64');
+        } else {
+          throw new Error('Blob URL işlenemedi');
+        }
       } else {
-        const response = await page.request.get(imageSrc);
-        imageBuffer = await response.body();
+        throw new Error(`Bilinmeyen URL formatı: ${imageSrc.substring(0, 30)}`);
+      }
+      
+      if (!imageBuffer || imageBuffer.length < 1000) {
+        throw new Error('Görsel buffer boş veya çok küçük');
       }
       
       const time = (Date.now() - startTime) / 1000;
-      console.log(`✅ Tamamlandı: ${time.toFixed(1)}s`);
+      console.log(`✅ Tamamlandı: ${time.toFixed(1)}s | Boyut: ${(imageBuffer.length / 1024).toFixed(1)}KB`);
       
       await page.close();
       return { success: true, imageBuffer, processingTime: time };
       
     } catch (error) {
       console.error('❌ Hata:', error.message);
-      if (page) await page.close();
+      if (page) {
+        try { await page.close(); } catch (e) {}
+      }
       return { success: false, error: error.message };
     }
   }
   
   async close() {
-    if (this.browser) { await this.browser.close(); this.browser = null; this.context = null; }
+    if (this.browser) { 
+      await this.browser.close(); 
+      this.browser = null; 
+      this.context = null; 
+    }
   }
 }
 
