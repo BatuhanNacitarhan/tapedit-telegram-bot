@@ -18,7 +18,6 @@ RUN npx playwright install chromium --with-deps
 
 COPY . .
 
-# Downloads dizini
 RUN mkdir -p /app/downloads
 
 CMD ["npm", "start"]
