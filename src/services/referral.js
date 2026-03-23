@@ -1,32 +1,25 @@
 const crypto = require('crypto');
 const User = require('../models/User');
-const db = require('../database');
+const { dbHelper } = require('../database');
 
 class ReferralService {
   // Kullanıcının MEVCUT referans kodunu getir
   static getReferralCode(telegramId) {
-    const user = User.findById(telegramId);
-    if (user && user.referral_code) {
-      return user.referral_code;
-    }
-    
-    // Sadece kod yoksa yeni oluştur
-    const newCode = crypto
+    // Bu fonksiyon sync kalmalı çünkü basit hash üretimi
+    return crypto
       .createHash('md5')
       .update(telegramId.toString())
       .digest('hex')
       .substring(0, 8)
       .toUpperCase();
-    
-    return newCode;
   }
   
   static generateReferralLink(referralCode, botUsername) {
     return `https://t.me/${botUsername}?start=${referralCode}`;
   }
   
-  static processReferral(newUserId, referralCode) {
-    const referrer = User.findByReferralCode(referralCode);
+  static async processReferral(newUserId, referralCode) {
+    const referrer = await User.findByReferralCode(referralCode);
     
     if (!referrer) {
       console.log('❌ Referans kodu bulunamadı:', referralCode);
@@ -38,7 +31,7 @@ class ReferralService {
       return { success: false, reason: 'self_referral' };
     }
     
-    const newUser = User.findById(newUserId);
+    const newUser = await User.findById(newUserId);
     if (!newUser) {
       return { success: false, reason: 'user_not_found' };
     }
@@ -53,11 +46,11 @@ class ReferralService {
     const REFERRER_BONUS = 1; // Davet edene
     
     // Yeni kullanıcıya bonus
-    User.setReferredBy(newUserId, referrer.telegram_id);
-    User.updateCredits(newUserId, REFERRED_BONUS);
+    await User.setReferredBy(newUserId, referrer.telegram_id);
+    await User.updateCredits(newUserId, REFERRED_BONUS);
     
     // Referans sahibine bonus
-    User.updateCredits(referrer.telegram_id, REFERRER_BONUS);
+    await User.updateCredits(referrer.telegram_id, REFERRER_BONUS);
     
     console.log(`✅ Referans başarılı: ${referrer.username} -> ${newUser.username} (+1 hak her ikisine)`);
     
@@ -68,26 +61,26 @@ class ReferralService {
     };
   }
   
-  static getReferralStats(telegramId) {
-    const result = db.prepare(`
-      SELECT COUNT(*) as total_referrals
-      FROM users 
-      WHERE referred_by = ?
-    `).get(telegramId);
+  static async getReferralStats(telegramId) {
+    const result = await dbHelper.get(
+      'SELECT COUNT(*) as total_referrals FROM users WHERE referred_by = ?',
+      [telegramId]
+    );
     
     return {
-      total_referrals: result.total_referrals,
-      total_credits_earned: result.total_referrals * 1 // Her referans = 1 hak
+      total_referrals: result?.total_referrals || 0,
+      total_credits_earned: (result?.total_referrals || 0) * 1
     };
   }
   
-  static getReferrals(telegramId) {
-    return db.prepare(`
-      SELECT telegram_id, username, credits, created_at
-      FROM users
-      WHERE referred_by = ?
-      ORDER BY created_at DESC
-    `).all(telegramId);
+  static async getReferrals(telegramId) {
+    return await dbHelper.all(
+      `SELECT telegram_id, username, credits, created_at
+       FROM users
+       WHERE referred_by = ?
+       ORDER BY created_at DESC`,
+      [telegramId]
+    );
   }
 }
 
