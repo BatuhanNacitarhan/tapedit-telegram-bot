@@ -13,6 +13,7 @@ const db = new Database(dbPath);
 
 db.pragma('journal_mode = WAL');
 
+// Tabloları oluştur
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,12 +53,23 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_generations_user_id ON generations(user_id);
 `);
 
-// Otomatik güncelleme
-if (!langCol) {
-  db.exec('ALTER TABLE users ADD COLUMN language TEXT DEFAULT "tr"');
-}
-if (!dailyCol) {
-  db.exec('ALTER TABLE users ADD COLUMN last_daily_reward DATETIME DEFAULT NULL');
+// Yeni sütunları kontrol et ve ekle (eski DB'ler için)
+try {
+  const columns = db.prepare("PRAGMA table_info(users)").all();
+  
+  const langCol = columns.find(col => col.name === 'language');
+  if (!langCol) {
+    db.exec('ALTER TABLE users ADD COLUMN language TEXT DEFAULT "tr"');
+    console.log('✅ language sütunu eklendi');
+  }
+  
+  const dailyCol = columns.find(col => col.name === 'last_daily_reward');
+  if (!dailyCol) {
+    db.exec('ALTER TABLE users ADD COLUMN last_daily_reward DATETIME DEFAULT NULL');
+    console.log('✅ last_daily_reward sütunu eklendi');
+  }
+} catch (error) {
+  console.log('⚠️ Sütun kontrolü:', error.message);
 }
 
 const userCount = db.prepare('SELECT COUNT(*) as c FROM users').get();
@@ -82,4 +94,12 @@ const dbHelper = {
   }
 };
 
-module.exports = { initDatabase: () => {}, dbHelper, isTurso: () => false };
+function getLocalDb() {
+  return db;
+}
+
+function isTurso() {
+  return false;
+}
+
+module.exports = { initDatabase: () => {}, dbHelper, getLocalDb, isTurso };
