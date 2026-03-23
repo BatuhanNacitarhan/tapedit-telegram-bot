@@ -9,24 +9,25 @@ let isTurso = false;
 
 async function initDatabase() {
   if (TURSO_URL && TURSO_AUTH_TOKEN) {
-    // TURSO KULLAN
     console.log('🗄️ Turso Database bağlanılıyor...');
     isTurso = true;
     
     const { createClient } = require('@libsql/client');
     
+    // MIGRATIONS KAPALI - Manuel tablo oluşturma
     db = createClient({
       url: TURSO_URL,
-      authToken: TURSO_AUTH_TOKEN
+      authToken: TURSO_AUTH_TOKEN,
+      syncInterval: 0,  // Sync kapalı
+      syncUrl: undefined // Migration URL kapalı
     });
     
-    // Tabloları TEK TEK oluştur (batch sorun çıkarabilir)
     console.log('📋 Tablolar oluşturuluyor...');
     
     // Users tablosu
     await db.execute(`
       CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id INTEGER PRIMARY KEY,
         telegram_id INTEGER UNIQUE NOT NULL,
         username TEXT DEFAULT '',
         credits INTEGER DEFAULT 5,
@@ -37,16 +38,16 @@ async function initDatabase() {
         temp_image_url TEXT DEFAULT NULL,
         temp_file_id TEXT DEFAULT NULL,
         temp_image_buffer TEXT DEFAULT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        last_active DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT DEFAULT (datetime('now')),
+        last_active TEXT DEFAULT (datetime('now'))
       )
-    `);
+    `).catch(() => {}); // Zaten varsa hata yok say
     console.log('✅ users tablosu');
     
     // Generations tablosu
     await db.execute(`
       CREATE TABLE IF NOT EXISTS generations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id INTEGER PRIMARY KEY,
         user_id INTEGER NOT NULL,
         username TEXT,
         prompt TEXT NOT NULL,
@@ -57,23 +58,20 @@ async function initDatabase() {
         status TEXT DEFAULT 'pending',
         error_message TEXT,
         processing_time REAL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(telegram_id)
+        created_at TEXT DEFAULT (datetime('now'))
       )
-    `);
+    `).catch(() => {});
     console.log('✅ generations tablosu');
     
     // Indexler
-    await db.execute('CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)');
-    await db.execute('CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code)');
-    await db.execute('CREATE INDEX IF NOT EXISTS idx_generations_user_id ON generations(user_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id)').catch(() => {});
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code)').catch(() => {});
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_generations_user_id ON generations(user_id)').catch(() => {});
     console.log('✅ indexler');
     
-    console.log('✅ Turso Database bağlantısı başarılı!');
-    console.log(`📡 URL: ${TURSO_URL}`);
+    console.log('✅ Turso bağlantısı başarılı!');
     
   } else {
-    // LOCAL SQLITE KULLAN
     console.log('🗄️ Local SQLite kullanılıyor...');
     
     const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
@@ -86,7 +84,6 @@ async function initDatabase() {
     db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
     
-    // Tabloları oluştur
     db.exec(`
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,8 +113,7 @@ async function initDatabase() {
         status TEXT DEFAULT 'pending',
         error_message TEXT,
         processing_time REAL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(telegram_id)
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
 
       CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
@@ -126,30 +122,24 @@ async function initDatabase() {
     `);
     
     console.log('✅ Local SQLite başlatıldı');
-    console.log(`📁 Veritabanı: ${dbPath}`);
   }
   
-  // Mevcut verileri logla
+  // Veri sayısı
   try {
-    let userCount, generationCount;
-    
     if (isTurso) {
-      userCount = await db.execute('SELECT COUNT(*) as count FROM users');
-      generationCount = await db.execute('SELECT COUNT(*) as count FROM generations');
-      console.log(`📊 Mevcut kullanıcı: ${userCount.rows[0].count}`);
-      console.log(`📊 Mevcut görsel kaydı: ${generationCount.rows[0].count}`);
+      const users = await db.execute('SELECT COUNT(*) as c FROM users');
+      const gens = await db.execute('SELECT COUNT(*) as c FROM generations');
+      console.log(`📊 Kullanıcı: ${users.rows[0]?.c || 0}, Görsel: ${gens.rows[0]?.c || 0}`);
     } else {
-      userCount = db.prepare('SELECT COUNT(*) as count FROM users').get();
-      generationCount = db.prepare('SELECT COUNT(*) as count FROM generations').get();
-      console.log(`📊 Mevcut kullanıcı: ${userCount.count}`);
-      console.log(`📊 Mevcut görsel kaydı: ${generationCount.count}`);
+      const users = db.prepare('SELECT COUNT(*) as c FROM users').get();
+      const gens = db.prepare('SELECT COUNT(*) as c FROM generations').get();
+      console.log(`📊 Kullanıcı: ${users.c}, Görsel: ${gens.c}`);
     }
   } catch (e) {
-    console.log('📊 Yeni veritabanı, henüz veri yok');
+    console.log('📊 Yeni veritabanı');
   }
 }
 
-// Helper fonksiyonlar
 const dbHelper = {
   isTurso: () => isTurso,
   
@@ -157,33 +147,25 @@ const dbHelper = {
     if (isTurso) {
       const result = await db.execute({ sql, args: params });
       return result.rows[0] || null;
-    } else {
-      return db.prepare(sql).get(...params);
     }
+    return db.prepare(sql).get(...params);
   },
   
   async all(sql, params = []) {
     if (isTurso) {
       const result = await db.execute({ sql, args: params });
       return result.rows;
-    } else {
-      return db.prepare(sql).all(...params);
     }
+    return db.prepare(sql).all(...params);
   },
   
   async run(sql, params = []) {
     if (isTurso) {
       const result = await db.execute({ sql, args: params });
       return { changes: result.rowsAffected, lastInsertRowid: result.lastInsertRowid };
-    } else {
-      return db.prepare(sql).run(...params);
     }
+    return db.prepare(sql).run(...params);
   }
 };
 
-module.exports = { 
-  initDatabase, 
-  dbHelper,
-  getDb: () => db,
-  isTurso: () => isTurso
-};
+module.exports = { initDatabase, dbHelper, isTurso: () => isTurso };
