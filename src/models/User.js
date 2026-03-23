@@ -29,10 +29,24 @@ class User {
     return user;
   }
   
+  
   static async findById(telegramId) {
     return await dbHelper.get('SELECT * FROM users WHERE telegram_id = ?', [telegramId]);
   }
+  // ========== DİL FONKSİYONLARI ==========
+  static async setLanguage(telegramId, language) { }
+  static async getLanguage(telegramId) { }
   
+  // ========== GÜNLÜK ÖDÜL FONKSİYONLARI ==========
+  static async canClaimDailyReward(telegramId) {
+    // 24 saat kontrolü
+    // { canClaim: true/false, remainingHours, remainingMinutes }
+  }
+  
+  static async claimDailyReward(telegramId) {
+    // Ödülü ver
+    // { success: true, newCredits: 6 }
+  }
   static async findByReferralCode(code) {
     return await dbHelper.get('SELECT * FROM users WHERE referral_code = ?', [code]);
   }
