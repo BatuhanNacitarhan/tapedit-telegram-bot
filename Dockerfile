@@ -17,6 +17,11 @@ RUN npx playwright install chromium --with-deps
 
 COPY . .
 
-RUN mkdir -p /app/data /app/downloads
+# Persistent storage için /data dizini
+# Bu dizin Koyeb'de volume olarak mount edilecek
+RUN mkdir -p /data /app/downloads
+
+# Environment variable default
+ENV DATA_DIR=/data
 
 CMD ["npm", "start"]
