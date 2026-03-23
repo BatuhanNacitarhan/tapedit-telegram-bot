@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
     libpango-1.0-0 libcairo2 libatspi2.0-0 \
     fonts-liberation fonts-noto-color-emoji \
+    python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -17,11 +18,7 @@ RUN npx playwright install chromium --with-deps
 
 COPY . .
 
-# Persistent storage için /data dizini
-# Bu dizin Koyeb'de volume olarak mount edilecek
-RUN mkdir -p /data /app/downloads
-
-# Environment variable default
-ENV DATA_DIR=/data
+# Downloads dizini
+RUN mkdir -p /app/downloads
 
 CMD ["npm", "start"]
