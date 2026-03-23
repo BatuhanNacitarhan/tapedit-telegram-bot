@@ -833,7 +833,7 @@ bot.on('message', async (msg) => {
         : updatedUser.credits;
       
       await bot.sendDocument(msg.chat.id, result.imageBuffer, {
-        caption: truncateCaption(`✅ Hazır!\n\n📝 ${prompt}\n⏱️ ${processingTime.toFixed(1)}s\n🎫 Kalan: ${creditDisplay}`),
+        caption: `✅ Hazır!\n⏱️ ${processingTime.toFixed(1)}s\n🎫 Kalan: ${creditDisplay}`,
         filename: `result_${Date.now()}.jpg`
       });
       
