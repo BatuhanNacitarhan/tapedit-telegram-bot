@@ -26,6 +26,8 @@ db.exec(`
     temp_image_url TEXT DEFAULT NULL,
     temp_file_id TEXT DEFAULT NULL,
     temp_image_buffer TEXT DEFAULT NULL,
+    language TEXT DEFAULT 'tr',
+    last_daily_reward DATETIME DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_active DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -49,6 +51,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code);
   CREATE INDEX IF NOT EXISTS idx_generations_user_id ON generations(user_id);
 `);
+
+// Otomatik güncelleme
+if (!langCol) {
+  db.exec('ALTER TABLE users ADD COLUMN language TEXT DEFAULT "tr"');
+}
+if (!dailyCol) {
+  db.exec('ALTER TABLE users ADD COLUMN last_daily_reward DATETIME DEFAULT NULL');
+}
 
 const userCount = db.prepare('SELECT COUNT(*) as c FROM users').get();
 const genCount = db.prepare('SELECT COUNT(*) as c FROM generations').get();
