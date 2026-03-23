@@ -3,7 +3,7 @@ const User = require('../models/User');
 const db = require('../database');
 
 class ReferralService {
-  // Kullanıcının MEVCUT referans kodunu getir (yeni oluşturma!)
+  // Kullanıcının MEVCUT referans kodunu getir
   static getReferralCode(telegramId) {
     const user = User.findById(telegramId);
     if (user && user.referral_code) {
@@ -48,8 +48,9 @@ class ReferralService {
       return { success: false, reason: 'already_referred' };
     }
     
-    const REFERRED_BONUS = parseInt(process.env.REFERRED_BONUS) || 2;
-    const REFERRER_BONUS = parseInt(process.env.REFERRER_BONUS) || 3;
+    // HER İKİ TARAFA DA 1 HAK
+    const REFERRED_BONUS = 1; // Davet edilene
+    const REFERRER_BONUS = 1; // Davet edene
     
     // Yeni kullanıcıya bonus
     User.setReferredBy(newUserId, referrer.telegram_id);
@@ -58,7 +59,7 @@ class ReferralService {
     // Referans sahibine bonus
     User.updateCredits(referrer.telegram_id, REFERRER_BONUS);
     
-    console.log(`✅ Referans başarılı: ${referrer.username} -> ${newUser.username}`);
+    console.log(`✅ Referans başarılı: ${referrer.username} -> ${newUser.username} (+1 hak her ikisine)`);
     
     return {
       success: true,
@@ -74,15 +75,12 @@ class ReferralService {
       WHERE referred_by = ?
     `).get(telegramId);
     
-    const REFERRER_BONUS = parseInt(process.env.REFERRER_BONUS) || 3;
-    
     return {
       total_referrals: result.total_referrals,
-      total_credits_earned: result.total_referrals * REFERRER_BONUS
+      total_credits_earned: result.total_referrals * 1 // Her referans = 1 hak
     };
   }
   
-  // Kullanıcının referansla gelenleri listele
   static getReferrals(telegramId) {
     return db.prepare(`
       SELECT telegram_id, username, credits, created_at
