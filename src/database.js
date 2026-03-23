@@ -19,6 +19,7 @@ db.exec(`
     state TEXT DEFAULT NULL,
     temp_image_url TEXT DEFAULT NULL,
     temp_file_id TEXT DEFAULT NULL,
+    temp_image_buffer TEXT DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_active DATETIME DEFAULT CURRENT_TIMESTAMP
   )
@@ -52,6 +53,13 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_generations_created_at ON generations(cr
 // is_unlimited kolonu yoksa ekle
 try {
   db.exec(`ALTER TABLE users ADD COLUMN is_unlimited INTEGER DEFAULT 0`);
+} catch (e) {
+  // Kolon zaten var, hata yoksay
+}
+
+// temp_image_buffer kolonu yoksa ekle
+try {
+  db.exec(`ALTER TABLE users ADD COLUMN temp_image_buffer TEXT`);
 } catch (e) {
   // Kolon zaten var, hata yoksay
 }
