@@ -7,7 +7,7 @@ class Generation {
   }
   
   static getStats(telegramId) {
-    return db.prepare('SELECT COUNT(*) as total, SUM(CASE WHEN status = "completed" THEN 1 ELSE 0 END) as completed, SUM(CASE WHEN status = "failed" THEN 1 ELSE 0 END) as failed FROM generations WHERE user_id = ?').get(telegramId);
+    return db.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed, SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed FROM generations WHERE user_id = ?`).get(telegramId);
   }
 }
 
