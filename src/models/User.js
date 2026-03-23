@@ -66,6 +66,10 @@ class User {
       updates.push('temp_file_id = ?');
       values.push(extras.temp_file_id);
     }
+    if (extras.temp_image_buffer !== undefined) {
+      updates.push('temp_image_buffer = ?');
+      values.push(extras.temp_image_buffer);
+    }
     
     values.push(telegramId);
     db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE telegram_id = ?`).run(...values);
