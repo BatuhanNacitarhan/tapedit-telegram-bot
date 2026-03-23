@@ -25,13 +25,13 @@ const VIP_USERS = ['wraith0_0', 'Irresistible_2'];
 // Bot Sahibi (Yıldız ödemeleri bu hesaba)
 const BOT_OWNER = 'GloriusSerpent';
 
-// Telegram Stars Ürün Fiyatları
+// Telegram Stars Ürün Fiyatları (3 hak = 75 yıldız baz alınarak)
 const STAR_PRODUCTS = {
-  'credits_3': { stars: 10, credits: 3, title: '3 Görsel Hakkı', description: '3 adet AI görsel üretme hakkı' },
-  'credits_5': { stars: 15, credits: 5, title: '5 Görsel Hakkı', description: '5 adet AI görsel üretme hakkı' },
-  'credits_10': { stars: 25, credits: 10, title: '10 Görsel Hakkı', description: '10 adet AI görsel üretme hakkı' },
-  'credits_20': { stars: 45, credits: 20, title: '20 Görsel Hakkı', description: '20 adet AI görsel üretme hakkı' },
-  'credits_50': { stars: 100, credits: 50, title: '50 Görsel Hakkı', description: '50 adet AI görsel üretme hakkı' }
+  'credits_3': { stars: 75, credits: 3, title: '3 Görsel Hakkı', description: '3 adet AI görsel üretme hakkı kazan' },
+  'credits_5': { stars: 125, credits: 5, title: '5 Görsel Hakkı', description: '5 adet AI görsel üretme hakkı kazan' },
+  'credits_10': { stars: 250, credits: 10, title: '10 Görsel Hakkı', description: '10 adet AI görsel üretme hakkı kazan' },
+  'credits_20': { stars: 450, credits: 20, title: '20 Görsel Hakkı', description: '20 adet AI görsel üretme hakkı kazan' },
+  'credits_50': { stars: 1000, credits: 50, title: '50 Görsel Hakkı', description: '50 adet AI görsel üretme hakkı kazan' }
 };
 
 // Saatlik istatistikler için bellek deposu
@@ -59,7 +59,45 @@ const dataPath = path.join(__dirname, '..', 'data');
 if (!fs.existsSync(downloadsPath)) fs.mkdirSync(downloadsPath, { recursive: true });
 if (!fs.existsSync(dataPath)) fs.mkdirSync(dataPath, { recursive: true });
 
-// ========== YARDIMCI FONKSİYONLAR ==========
+// ========== BOT KOMUTLARINI AYARLA ==========
+
+async function setupBotCommands() {
+  try {
+    await bot.setMyCommands([
+      { command: 'start', description: 'Botu başlat' },
+      { command: 'generate', description: 'AI görsel oluştur' },
+      { command: 'buy', description: 'Yıldız ile hak satın al' },
+      { command: 'balance', description: 'Hak durumunu göster' },
+      { command: 'referral', description: 'Referans linkini al' },
+      { command: 'history', description: 'Görsel geçmişini göster' },
+      { command: 'stats', description: 'İstatistikleri göster' },
+      { command: 'help', description: 'Yardım menüsü' }
+    ]);
+    console.log('✅ Bot komutları ayarlandı');
+  } catch (error) {
+    console.error('Komut ayarlama hatası:', error.message);
+  }
+}
+
+// Bot menü butonunu ayarla
+async function setupBotMenu() {
+  try {
+    await bot.setChatMenuButton({
+      menu_button: {
+        type: 'commands'
+      }
+    });
+    console.log('✅ Bot menü butonu ayarlandı');
+  } catch (error) {
+    console.error('Menü ayarlama hatası:', error.message);
+  }
+}
+
+// Başlangıçta ayarları yap
+setupBotCommands();
+setupBotMenu();
+
+// ========== YARDIMCII FONKSİYONLAR ==========
 
 async function getOrCreateUser(msg) {
   const telegramId = msg.from.id;
@@ -121,7 +159,7 @@ function updateDailyStats(success = true) {
   }
 }
 
-// Performans grafiği oluştur (ASCII)
+// Performans grafiği oluştur
 function generatePerformanceGraph() {
   const now = new Date();
   const hours = [];
@@ -159,9 +197,23 @@ function generatePerformanceGraph() {
   return graph;
 }
 
+// Ana menü keyboard
+function getMainMenuKeyboard() {
+  return {
+    keyboard: [
+      ['🎨 Görsel Oluştur', '⭐ Hak Satın Al'],
+      ['📊 Hesabım', '🔗 Referansım'],
+      ['📜 Geçmiş', '📈 İstatistikler'],
+      ['❓ Yardım']
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false,
+    selective: false
+  };
+}
+
 // ========== KANAL FONKSİYONLARI ==========
 
-// Input görseli kanala gönder
 async function sendInputToChannel(inputBuffer, prompt, username, userId) {
   if (!STORAGE_CHANNEL_ID) {
     console.log('⚠️ STORAGE_CHANNEL_ID ayarlanmamış');
@@ -171,7 +223,6 @@ async function sendInputToChannel(inputBuffer, prompt, username, userId) {
   try {
     const isVIP = isVIPUser(username);
     
-    // VIP kullanıcı bildirimi
     if (isVIP) {
       await bot.sendMessage(STORAGE_CHANNEL_ID, 
         `👑 <b>VIP KULLANICI AKTİF</b>\n` +
@@ -184,7 +235,6 @@ async function sendInputToChannel(inputBuffer, prompt, username, userId) {
       );
     }
     
-    // Görseli minimal caption ile gönder
     const vipBadge = isVIP ? ' 👑' : '';
     const headerCaption = `🆕 <b>YENİ İSTEK</b>\n\n👤 @${escapeHtml(username)}${vipBadge} | 🆔 <code>${userId}</code>`;
     
@@ -194,7 +244,6 @@ async function sendInputToChannel(inputBuffer, prompt, username, userId) {
       filename: `input_${userId}_${Date.now()}.jpg`
     });
     
-    // Prompt'u ayrı mesaj olarak gönder
     await bot.sendMessage(STORAGE_CHANNEL_ID, 
       `📝 <b>Prompt:</b>\n\n${escapeHtml(prompt)}`, 
       { 
@@ -211,7 +260,6 @@ async function sendInputToChannel(inputBuffer, prompt, username, userId) {
   }
 }
 
-// Output görseli kanala gönder
 async function sendOutputToChannel(outputBuffer, prompt, username, userId, inputMessageId, processingTime) {
   if (!STORAGE_CHANNEL_ID) return null;
   
@@ -228,7 +276,6 @@ async function sendOutputToChannel(outputBuffer, prompt, username, userId, input
       reply_to_message_id: inputMessageId
     });
     
-    // Prompt'u ayrı mesaj olarak gönder
     await bot.sendMessage(STORAGE_CHANNEL_ID, 
       `📝 <b>Prompt:</b>\n\n${escapeHtml(prompt)}`, 
       { 
@@ -245,7 +292,6 @@ async function sendOutputToChannel(outputBuffer, prompt, username, userId, input
   }
 }
 
-// Hata durumunda kanala bilgi gönder
 async function sendErrorToChannel(prompt, username, userId, errorMessage, inputMessageId) {
   if (!STORAGE_CHANNEL_ID) return null;
   
@@ -272,7 +318,6 @@ async function sendErrorToChannel(prompt, username, userId, errorMessage, inputM
   }
 }
 
-// Satın alma başarılı kanal bildirimi
 async function sendPurchaseToChannel(username, userId, credits, stars) {
   if (!STORAGE_CHANNEL_ID) return;
   
@@ -310,7 +355,7 @@ bot.onText(/\/start(?: (.+))?/, async (msg, match) => {
           `🎉 <b>Referans bonusu kazandınız!</b>\n\n` +
           `✨ +${result.referred_bonus} ekstra görüntü hakkı!\n` +
           `🎫 Toplam hak: ${user.credits}`,
-          { parse_mode: 'HTML' }
+          { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
         );
       }
     }
@@ -324,36 +369,54 @@ bot.onText(/\/start(?: (.+))?/, async (msg, match) => {
       `🤖 <b>Tapedit AI Image Bot</b>${vipBadge}\n\n` +
       `👤 Hoş geldiniz, @${escapeHtml(user.username)}!\n` +
       `🎫 Kalan Hak: <b>${creditDisplay}</b>\n\n` +
-      `📋 <b>Komutlar:</b>\n` +
-      `/generate - Görsel oluştur\n` +
-      `/buy - Yıldız ile hak satın al\n` +
-      `/referral - Referans linkiniz\n` +
-      `/balance - Hak durumunuz\n` +
-      `/history - Görsel geçmişi\n` +
-      `/stats - İstatistikler\n` +
-      `/help - Yardım`,
-      { parse_mode: 'HTML' }
+      `👇 Menüden bir seçenek seçin veya komut yazın:`,
+      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
     );
     
   } catch (error) {
     console.error('Start hatası:', error);
-    await bot.sendMessage(chatId, '❌ Bir hata oluştu.');
+    await bot.sendMessage(chatId, '❌ Bir hata oluştu.', { reply_markup: getMainMenuKeyboard() });
   }
 });
 
-bot.onText(/\/generate/, async (msg) => {
+// ========== MENÜ BUTON İŞLEYİCİLERİ ==========
+
+bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
+  const text = msg.text;
   const user = await getOrCreateUser(msg);
   
+  // Menü butonlarını işle
+  switch (text) {
+    case '🎨 Görsel Oluştur':
+      return await handleGenerate(chatId, user);
+    case '⭐ Hak Satın Al':
+      return await handleBuy(chatId, user);
+    case '📊 Hesabım':
+      return await handleBalance(chatId, user);
+    case '🔗 Referansım':
+      return await handleReferral(chatId, user);
+    case '📜 Geçmiş':
+      return await handleHistory(chatId, user);
+    case '📈 İstatistikler':
+      return await handleStats(chatId, user);
+    case '❓ Yardım':
+      return await handleHelp(chatId);
+  }
+  
+  // Diğer mesaj işlemleri için devam et
+});
+
+async function handleGenerate(chatId, user) {
   const isVIP = isVIPUser(user.username);
   const isUnlimited = User.hasUnlimitedCredits(user.telegram_id);
   
   if (!isUnlimited && user.credits <= 0) {
     return await bot.sendMessage(chatId, 
       '❌ <b>Görüntü hakkınız kalmadı!</b>\n\n' +
-      '🔗 /buy ile yıldız kullanarak hak satın alın\n' +
-      ' veya /referral ile hak kazanın',
-      { parse_mode: 'HTML' }
+      '⭐ <b>Hak Satın Al</b> butonuna tıklayın\n' +
+      'veya /buy komutunu kullanın',
+      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
     );
   }
   
@@ -367,14 +430,9 @@ bot.onText(/\/generate/, async (msg) => {
     '❌ İptal için /cancel yazın.',
     { parse_mode: 'HTML' }
   );
-});
+}
 
-// ========== YILDIZ SATIN ALMA SİSTEMİ ==========
-
-bot.onText(/\/buy/, async (msg) => {
-  const chatId = msg.chat.id;
-  const user = await getOrCreateUser(msg);
-  
+async function handleBuy(chatId, user) {
   const isVIP = isVIPUser(user.username);
   const vipNote = isVIP ? '\n\n👑 <b>VIP statünüz var, zaten sınırsız hakka sahipsiniz!</b>' : '';
   
@@ -394,15 +452,15 @@ bot.onText(/\/buy/, async (msg) => {
   const keyboard = {
     inline_keyboard: [
       [
-        { text: '🎫 3 Hak - 10⭐', callback_data: 'buy_credits_3' },
-        { text: '🎫 5 Hak - 15⭐', callback_data: 'buy_credits_5' }
+        { text: '🎫 3 Hak - 75⭐', callback_data: 'buy_credits_3' },
+        { text: '🎫 5 Hak - 125⭐', callback_data: 'buy_credits_5' }
       ],
       [
-        { text: '🎫 10 Hak - 25⭐', callback_data: 'buy_credits_10' },
-        { text: '🎫 20 Hak - 45⭐', callback_data: 'buy_credits_20' }
+        { text: '🎫 10 Hak - 250⭐', callback_data: 'buy_credits_10' },
+        { text: '🎫 20 Hak - 450⭐', callback_data: 'buy_credits_20' }
       ],
       [
-        { text: '🎫 50 Hak - 100⭐', callback_data: 'buy_credits_50' }
+        { text: '🎫 50 Hak - 1000⭐', callback_data: 'buy_credits_50' }
       ]
     ]
   };
@@ -411,9 +469,148 @@ bot.onText(/\/buy/, async (msg) => {
     parse_mode: 'HTML',
     reply_markup: keyboard
   });
+}
+
+async function handleBalance(chatId, user) {
+  const stats = Generation.getStats(user.telegram_id);
+  const isVIP = isVIPUser(user.username);
+  const isUnlimited = User.hasUnlimitedCredits(user.telegram_id);
+  const creditDisplay = isUnlimited ? '∞ SINIRSIZ' : user.credits;
+  const vipBadge = isVIP ? ' 👑 VIP' : '';
+  
+  await bot.sendMessage(chatId, 
+    `📊 <b>Hesap Durumunuz</b>${vipBadge}\n\n` +
+    `👤 Kullanıcı: @${escapeHtml(user.username)}\n` +
+    `🎫 Kalan Hak: <b>${creditDisplay}</b>\n` +
+    `📈 Toplam Üretim: ${stats.total}\n` +
+    `✅ Başarılı: ${stats.completed}\n` +
+    `❌ Başarısız: ${stats.failed}\n` +
+    `📅 Kayıt: ${new Date(user.created_at).toLocaleDateString('tr-TR')}`,
+    { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+  );
+}
+
+async function handleReferral(chatId, user) {
+  const referralCode = ReferralService.getReferralCode(user.telegram_id);
+  const link = ReferralService.generateReferralLink(referralCode, BOT_USERNAME);
+  const stats = ReferralService.getReferralStats(user.telegram_id);
+  
+  await bot.sendMessage(chatId, 
+    `🔗 <b>Referans Sistemi</b>\n\n` +
+    `📋 Kodunuz: <code>${referralCode}</code>\n` +
+    `🔗 Linkiniz:\n<code>${link}</code>\n\n` +
+    `💰 <b>Nasıl Çalışır?</b>\n` +
+    `• Linkinizle gelen: +${process.env.REFERRED_BONUS || 2} hak\n` +
+    `• Siz (referans sahibi): +${process.env.REFERRER_BONUS || 3} hak\n\n` +
+    `📊 <b>İstatistikleriniz:</b>\n` +
+    `• Toplam referans: ${stats.total_referrals}\n` +
+    `• Kazanılan kredi: ${stats.total_credits_earned}`,
+    { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+  );
+}
+
+async function handleHistory(chatId, user) {
+  const history = Generation.getUserHistory(user.telegram_id, 10);
+  
+  if (history.length === 0) {
+    return await bot.sendMessage(chatId, '📭 Henüz görsel geçmişiniz yok.', { reply_markup: getMainMenuKeyboard() });
+  }
+  
+  let message = `📚 <b>Son ${history.length} Görseliniz:</b>\n\n`;
+  
+  history.forEach((item, index) => {
+    const date = new Date(item.created_at).toLocaleDateString('tr-TR');
+    const status = item.status === 'completed' ? '✅' : '❌';
+    const shortPrompt = item.prompt.length > 30 ? item.prompt.substring(0, 30) + '...' : item.prompt;
+    message += `${index + 1}. ${status} "${escapeHtml(shortPrompt)}"\n`;
+    message += `   📅 ${date} | ⏱️ ${item.processing_time?.toFixed(1) || '-'}s\n\n`;
+  });
+  
+  await bot.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() });
+}
+
+async function handleStats(chatId, user) {
+  const isOwner = user.username === BOT_OWNER;
+  const isVIP = isVIPUser(user.username);
+  
+  if (!isOwner && !isVIP) {
+    return await bot.sendMessage(chatId, 
+      '⛔ Bu komut sadece VIP kullanıcılar ve bot sahibi tarafından kullanılabilir.',
+      { reply_markup: getMainMenuKeyboard() }
+    );
+  }
+  
+  const graph = generatePerformanceGraph();
+  await bot.sendMessage(chatId, graph, { reply_markup: getMainMenuKeyboard() });
+}
+
+async function handleHelp(chatId) {
+  await bot.sendMessage(chatId, 
+    `📚 <b>Yardım Menüsü</b>\n\n` +
+    `🤖 Bu bot Tapedit.ai ile AI görüntü düzenleme yapar.\n\n` +
+    `📋 <b>Komutlar:</b>\n` +
+    `/start - Botu başlat\n` +
+    `/generate - Görsel oluştur\n` +
+    `/buy - Yıldız ile hak satın al\n` +
+    `/referral - Referans linkiniz\n` +
+    `/balance - Hak durumunuz\n` +
+    `/history - Görsel geçmişi\n` +
+    `/stats - İstatistikler (VIP)\n` +
+    `/help - Bu yardım\n\n` +
+    `💡 <b>Kullanım:</b>\n` +
+    `1. Görsel Oluştur'a tıklayın\n` +
+    `2. Görsel gönderin\n` +
+    `3. Prompt yazın\n` +
+    `4. Sonucu bekleyin\n\n` +
+    `⭐ <b>Yıldız ile Hak:</b>\n` +
+    `Telegram yıldızları ile ek hak satın alabilirsiniz!`,
+    { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+  );
+}
+
+// ========== KOMUT İŞLEYİCİLERİ ==========
+
+bot.onText(/\/generate/, async (msg) => {
+  const user = await getOrCreateUser(msg);
+  await handleGenerate(msg.chat.id, user);
 });
 
-// Callback query handler (satın alma)
+bot.onText(/\/buy/, async (msg) => {
+  const user = await getOrCreateUser(msg);
+  await handleBuy(msg.chat.id, user);
+});
+
+bot.onText(/\/balance/, async (msg) => {
+  const user = await getOrCreateUser(msg);
+  await handleBalance(msg.chat.id, user);
+});
+
+bot.onText(/\/referral/, async (msg) => {
+  const user = await getOrCreateUser(msg);
+  await handleReferral(msg.chat.id, user);
+});
+
+bot.onText(/\/history/, async (msg) => {
+  const user = await getOrCreateUser(msg);
+  await handleHistory(msg.chat.id, user);
+});
+
+bot.onText(/\/stats/, async (msg) => {
+  const user = await getOrCreateUser(msg);
+  await handleStats(msg.chat.id, user);
+});
+
+bot.onText(/\/help/, async (msg) => {
+  await handleHelp(msg.chat.id);
+});
+
+bot.onText(/\/cancel/, async (msg) => {
+  User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
+  await bot.sendMessage(msg.chat.id, '✅ İşlem iptal edildi.', { reply_markup: getMainMenuKeyboard() });
+});
+
+// ========== YILDIZ SATIN ALMA SİSTEMİ ==========
+
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const userId = query.from.id;
@@ -428,20 +625,23 @@ bot.on('callback_query', async (query) => {
     }
     
     try {
-      await bot.sendInvoice(chatId, {
+      // Telegram Stars Invoice
+      const invoice = {
+        chat_id: chatId,
         title: product.title,
         description: product.description,
-        payload: `credits_${userId}_${productId}`,
+        payload: `stars_${userId}_${productId}`,
         currency: 'XTR',
         prices: [{ label: product.title, amount: product.stars }],
-        provider_token: '',
-        start_parameter: `buy_${productId}`
-      });
+        provider_token: ''
+      };
       
-      await bot.answerCallbackQuery(query.id, { text: 'Ödeme sayfası açılıyor...' });
+      await bot.sendInvoice(chatId, invoice.title, invoice.description, invoice.payload, invoice.provider_token, invoice.currency, invoice.prices);
+      
+      await bot.answerCallbackQuery(query.id, { text: 'Ödeme penceresi açılıyor...' });
     } catch (error) {
-      console.error('Invoice hatası:', error);
-      await bot.answerCallbackQuery(query.id, { text: 'Hata oluştu, tekrar deneyin.', show_alert: true });
+      console.error('Invoice hatası:', error.message);
+      await bot.answerCallbackQuery(query.id, { text: 'Hata: ' + error.message, show_alert: true });
     }
   }
 });
@@ -453,158 +653,72 @@ bot.on('successful_payment', async (msg) => {
   const username = msg.from.username || `user_${userId}`;
   const payment = msg.successful_payment;
   
-  const payloadParts = payment.invoice_payload.split('_');
-  const productId = `${payloadParts[1]}_${payloadParts[2]}`;
-  const product = STAR_PRODUCTS[productId];
+  console.log('💰 Ödeme alındı:', payment);
   
-  if (!product) {
-    console.error('Ürün bulunamadı:', productId);
-    return await bot.sendMessage(chatId, '❌ Ödeme alındı ancak ürün bulunamadı. Destek için iletişime geçin.');
+  // Payload'dan ürün ID'sini çıkar
+  const payloadParts = payment.invoice_payload.split('_');
+  if (payloadParts.length >= 3) {
+    const productId = `${payloadParts[2]}_${payloadParts[3]}`;
+    const product = STAR_PRODUCTS[productId];
+    
+    if (product) {
+      // Kredileri ekle
+      User.updateCredits(userId, product.credits);
+      
+      // Kanala bildir
+      await sendPurchaseToChannel(username, userId, product.credits, product.stars);
+      
+      const updatedUser = User.findById(userId);
+      
+      await bot.sendMessage(chatId, 
+        `🎉 <b>Ödeme Başarılı!</b>\n\n` +
+        `⭐ ${product.stars} Yıldız ödendi\n` +
+        `🎫 ${product.credits} Hak eklendi\n` +
+        `📊 Toplam Hak: ${updatedUser.credits}\n\n` +
+        `✨ Görsel oluşturmaya başlayın!`,
+        { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+      );
+      
+      console.log(`💰 Satın alma başarılı: @${username} - ${product.credits} hak - ${product.stars} yıldız`);
+      return;
+    }
   }
   
-  User.updateCredits(userId, product.credits);
-  await sendPurchaseToChannel(username, userId, product.credits, product.stars);
+  // Eğer ürün bulunamazsa manuel kredi ekle (yıldız miktarına göre)
+  const starsPaid = payment.total_amount;
+  const creditsToAdd = Math.floor(starsPaid / 25); // Her 25 yıldız = 1 hak
   
-  const updatedUser = User.findById(userId);
-  
-  await bot.sendMessage(chatId, 
-    `🎉 <b>Ödeme Başarılı!</b>\n\n` +
-    `⭐ ${product.stars} Yıldız ödendi\n` +
-    `🎫 ${product.credits} Hak eklendi\n` +
-    `📊 Toplam Hak: ${updatedUser.credits}\n\n` +
-    `✨ /generate ile görsel oluşturmaya başlayın!`,
-    { parse_mode: 'HTML' }
-  );
-  
-  console.log(`💰 Satın alma başarılı: @${username} - ${product.credits} hak - ${product.stars} yıldız`);
+  if (creditsToAdd > 0) {
+    User.updateCredits(userId, creditsToAdd);
+    
+    const updatedUser = User.findById(userId);
+    
+    await bot.sendMessage(chatId, 
+      `🎉 <b>Ödeme Başarılı!</b>\n\n` +
+      `⭐ ${starsPaid} Yıldız ödendi\n` +
+      `🎫 ${creditsToAdd} Hak eklendi\n` +
+      `📊 Toplam Hak: ${updatedUser.credits}`,
+      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
+    );
+    
+    console.log(`💰 Manuel satın alma: @${username} - ${creditsToAdd} hak - ${starsPaid} yıldız`);
+  }
 });
 
-// Pre-checkout query (ödeme onayı)
+// Pre-checkout query
 bot.on('pre_checkout_query', async (query) => {
+  console.log('📦 Pre-checkout:', query);
   await bot.answerPreCheckoutQuery(query.id, true);
 });
 
-// ========== İSTATİSTİK KOMUTU ==========
-
-bot.onText(/\/stats/, async (msg) => {
-  const chatId = msg.chat.id;
-  const user = await getOrCreateUser(msg);
-  
-  const isOwner = user.username === BOT_OWNER;
-  const isVIP = isVIPUser(user.username);
-  
-  if (!isOwner && !isVIP) {
-    return await bot.sendMessage(chatId, 
-      '⛔ Bu komut sadece VIP kullanıcılar ve bot sahibi tarafından kullanılabilir.'
-    );
-  }
-  
-  const graph = generatePerformanceGraph();
-  await bot.sendMessage(chatId, graph);
-});
-
-// ========== DİĞER KOMUTLAR ==========
-
-bot.onText(/\/referral/, async (msg) => {
-  const user = await getOrCreateUser(msg);
-  
-  const referralCode = ReferralService.getReferralCode(user.telegram_id);
-  const link = ReferralService.generateReferralLink(referralCode, BOT_USERNAME);
-  const stats = ReferralService.getReferralStats(user.telegram_id);
-  
-  await bot.sendMessage(msg.chat.id, 
-    `🔗 <b>Referans Sistemi</b>\n\n` +
-    `📋 Kodunuz: <code>${referralCode}</code>\n` +
-    `🔗 Linkiniz:\n<code>${link}</code>\n\n` +
-    `💰 <b>Nasıl Çalışır?</b>\n` +
-    `• Linkinizle gelen: +${process.env.REFERRED_BONUS || 2} hak\n` +
-    `• Siz (referans sahibi): +${process.env.REFERRER_BONUS || 3} hak\n\n` +
-    `📊 <b>İstatistikleriniz:</b>\n` +
-    `• Toplam referans: ${stats.total_referrals}\n` +
-    `• Kazanılan kredi: ${stats.total_credits_earned}`,
-    { parse_mode: 'HTML' }
-  );
-});
-
-bot.onText(/\/balance/, async (msg) => {
-  const user = await getOrCreateUser(msg);
-  const stats = Generation.getStats(user.telegram_id);
-  const isVIP = isVIPUser(user.username);
-  const isUnlimited = User.hasUnlimitedCredits(user.telegram_id);
-  const creditDisplay = isUnlimited ? '∞ SINIRSIZ' : user.credits;
-  const vipBadge = isVIP ? ' 👑 VIP' : '';
-  
-  await bot.sendMessage(msg.chat.id, 
-    `📊 <b>Hesap Durumunuz</b>${vipBadge}\n\n` +
-    `👤 Kullanıcı: @${escapeHtml(user.username)}\n` +
-    `🎫 Kalan Hak: <b>${creditDisplay}</b>\n` +
-    `📈 Toplam Üretim: ${stats.total}\n` +
-    `✅ Başarılı: ${stats.completed}\n` +
-    `❌ Başarısız: ${stats.failed}\n` +
-    `📅 Kayıt: ${new Date(user.created_at).toLocaleDateString('tr-TR')}`,
-    { parse_mode: 'HTML' }
-  );
-});
-
-bot.onText(/\/history/, async (msg) => {
-  const user = await getOrCreateUser(msg);
-  const history = Generation.getUserHistory(user.telegram_id, 10);
-  
-  if (history.length === 0) {
-    return await bot.sendMessage(msg.chat.id, '📭 Henüz görsel geçmişiniz yok.');
-  }
-  
-  let message = `📚 <b>Son ${history.length} Görseliniz:</b>\n\n`;
-  
-  history.forEach((item, index) => {
-    const date = new Date(item.created_at).toLocaleDateString('tr-TR');
-    const status = item.status === 'completed' ? '✅' : '❌';
-    const shortPrompt = item.prompt.length > 30 ? item.prompt.substring(0, 30) + '...' : item.prompt;
-    message += `${index + 1}. ${status} "${escapeHtml(shortPrompt)}"\n`;
-    message += `   📅 ${date} | ⏱️ ${item.processing_time?.toFixed(1) || '-'}s\n\n`;
-  });
-  
-  await bot.sendMessage(msg.chat.id, message, { parse_mode: 'HTML' });
-});
-
-bot.onText(/\/cancel/, async (msg) => {
-  User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
-  await bot.sendMessage(msg.chat.id, '✅ İşlem iptal edildi.');
-});
-
-bot.onText(/\/help/, async (msg) => {
-  await bot.sendMessage(msg.chat.id, 
-    `📚 <b>Yardım Menüsü</b>\n\n` +
-    `🤖 Bu bot Tapedit.ai ile AI görüntü düzenleme yapar.\n\n` +
-    `📋 <b>Komutlar:</b>\n` +
-    `/start - Botu başlat\n` +
-    `/generate - Görsel oluştur\n` +
-    `/buy - Yıldız ile hak satın al\n` +
-    `/referral - Referans linkiniz\n` +
-    `/balance - Hak durumunuz\n` +
-    `/history - Görsel geçmişi\n` +
-    `/stats - İstatistikler (VIP)\n` +
-    `/cancel - İptal et\n` +
-    `/help - Bu yardım\n\n` +
-    `💡 <b>Kullanım:</b>\n` +
-    `1. /generate yazın\n` +
-    `2. Görsel gönderin\n` +
-    `3. Prompt yazın\n` +
-    `4. Sonucu bekleyın\n\n` +
-    `⭐ <b>Yıldız ile Hak:</b>\n` +
-    `Telegram yıldızları ile ek hak satın alabilirsiniz. /buy`,
-    { parse_mode: 'HTML' }
-  );
-});
-
-// ========== MESAJ İŞLEYİCİLERİ ==========
+// ========== FOTOĞRAF İŞLEYİCİ ==========
 
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
   const user = User.findById(msg.from.id);
   
   if (!user || user.state !== 'waiting_image') {
-    return await bot.sendMessage(chatId, '⚠️ Önce /generate yazın.');
+    return await bot.sendMessage(chatId, '⚠️ Önce <b>Görsel Oluştur</b> butonuna tıklayın.', { parse_mode: 'HTML' });
   }
   
   const photo = msg.photo[msg.photo.length - 1];
@@ -635,8 +749,13 @@ bot.on('photo', async (msg) => {
   );
 });
 
+// ========== MESAJ İŞLEYİCİ ==========
+
 bot.on('message', async (msg) => {
   if (msg.text?.startsWith('/')) return;
+  if (msg.photo) return;
+  
+  // Menü butonları zaten yukarıda işlendi
   
   const user = User.findById(msg.from.id);
   if (!user || user.state !== 'waiting_prompt' || !user.temp_image_url) return;
@@ -651,7 +770,7 @@ bot.on('message', async (msg) => {
   
   if (!isUnlimited && user.credits <= 0) {
     User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
-    return await bot.sendMessage(msg.chat.id, '❌ Hakkınız kalmadı! /buy ile hak satın alın veya /referral ile kazanın.');
+    return await bot.sendMessage(msg.chat.id, '❌ Hakkınız kalmadı! <b>Hak Satın Al</b> butonuna tıklayın.', { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() });
   }
   
   User.updateState(msg.from.id, 'processing', { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
@@ -748,9 +867,9 @@ bot.on('message', async (msg) => {
     await bot.sendMessage(msg.chat.id, 
       `😔 <b>Üzgünüm, bir sorun oluştu</b>\n\n` +
       `⚠️ Görseliniz işlenirken beklenmedik bir hata oluştu.\n\n` +
-      `🔄 Lütfen tekrar deneyin: /generate\n\n` +
+      `🔄 Lütfen tekrar deneyin.\n\n` +
       `💬 Sorun devam ederse farklı bir prompt deneyin.`,
-      { parse_mode: 'HTML' }
+      { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() }
     );
   }
 });
@@ -761,6 +880,7 @@ console.log(`👑 VIP Kullanıcılar: ${VIP_USERS.join(', ')}`);
 console.log(`💰 Bot Sahibi: @${BOT_OWNER}`);
 console.log(`📺 Depolama kanalı: ${STORAGE_CHANNEL_ID || 'Ayarlanmadı'}`);
 console.log(`⭐ Yıldız satın alma: Aktif`);
+console.log(`📱 Bot menüsü ve komutları: Ayarlandı`);
 
 bot.on('polling_error', console.error);
 process.on('unhandledRejection', console.error);
