@@ -266,6 +266,11 @@ bot.onText(/\/start(?: (.+))?/, async (msg, match) => {
     
     let user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
     const lang = getUserLanguage(user);
+
+    // Ban kontrolü
+    if (user.is_banned === 1) {
+      return await bot.sendMessage(chatId, '⛔ Hesabınız yasaklanmıştır. Destek için bot sahibiyle iletişime geçin.');
+    }
     
     if (isNewUser && referralCode) {
       const result = await ReferralService.processReferral(user.telegram_id, referralCode);
@@ -302,6 +307,12 @@ bot.on('message', async (msg) => {
   
   if (!text || text.startsWith('/')) return;
   if (msg.photo) return;
+
+  // Ban kontrolü
+  const banned = await User.isBanned(msg.from.id);
+  if (banned) {
+    return await bot.sendMessage(chatId, '⛔ Hesabınız yasaklanmıştır.');
+  }
   
   const user = await User.findOrCreate(msg.from.id, msg.from.username || `user_${msg.from.id}`);
   const lang = getUserLanguage(user);
@@ -395,6 +406,259 @@ bot.onText(/\/cancel/, async (msg) => {
   queueCancel(msg.from.id);
   await User.updateState(msg.from.id, null, { temp_image_url: null, temp_file_id: null, temp_image_buffer: null });
   await bot.sendMessage(msg.chat.id, `✅ ${t(lang, 'errors.operation_cancelled')}`, { reply_markup: getMainMenuKeyboard(lang) });
+});
+
+// ========== ADMİN KOMUTLARI ==========
+
+bot.onText(/\/admin/, async (msg) => {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || '';
+
+  if (username !== BOT_OWNER) {
+    return await bot.sendMessage(chatId, '⛔ Bu komut sadece bot sahibine özeldir.');
+  }
+
+  try {
+    const stats = await User.getAdminStats();
+    const qStats = queueGetStats();
+    const successRate = stats.totalGenerations > 0
+      ? ((stats.completedGenerations / stats.totalGenerations) * 100).toFixed(1)
+      : '0';
+
+    let topList = '';
+    stats.topUsers.forEach((u, i) => {
+      topList += `${i + 1}. @${escapeHtml(u.username || 'bilinmiyor')} — ${u.gen_count} görsel\n`;
+    });
+
+    const message =
+      `🛡️ <b>ADMİN PANELİ</b>\n\n` +
+      `👥 <b>Kullanıcılar</b>\n` +
+      `├ Toplam: <b>${stats.totalUsers}</b>\n` +
+      `├ Bugün yeni: <b>${stats.todayUsers}</b>\n` +
+      `└ Banlı: <b>${stats.bannedUsers}</b>\n\n` +
+      `🎨 <b>Görseller</b>\n` +
+      `├ Toplam: <b>${stats.totalGenerations}</b>\n` +
+      `├ Bugün: <b>${stats.todayGenerations}</b>\n` +
+      `└ Başarı oranı: <b>%${successRate}</b>\n\n` +
+      `🔢 <b>Kuyruk</b>\n` +
+      `├ Bekleyen: <b>${qStats.queueLength}</b>\n` +
+      `└ İşlenen: <b>${qStats.processingCount}</b>\n\n` +
+      `🏆 <b>En Aktif 5 Kullanıcı</b>\n${topList || 'Henüz veri yok'}\n\n` +
+      `📋 <b>Komutlar:</b>\n` +
+      `/addcredits @kullanıcı 10\n` +
+      `/removecredits @kullanıcı 5\n` +
+      `/ban @kullanıcı\n` +
+      `/unban @kullanıcı\n` +
+      `/broadcast mesaj`;
+
+    await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
+  } catch (error) {
+    console.error('Admin panel hatası:', error);
+    await bot.sendMessage(chatId, `❌ Hata: ${error.message}`);
+  }
+});
+
+bot.onText(/\/addcredits(?: (.+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || '';
+
+  if (username !== BOT_OWNER) {
+    return await bot.sendMessage(chatId, '⛔ Bu komut sadece bot sahibine özeldir.');
+  }
+
+  const args = match[1]?.trim().split(/\s+/);
+  if (!args || args.length < 2) {
+    return await bot.sendMessage(chatId, '❌ Kullanım: /addcredits @kullanıcı 10');
+  }
+
+  const targetUsername = args[0].replace('@', '');
+  const amount = parseInt(args[1]);
+
+  if (isNaN(amount) || amount <= 0) {
+    return await bot.sendMessage(chatId, '❌ Geçerli bir sayı girin. Örnek: /addcredits @kullanıcı 10');
+  }
+
+  try {
+    const targetUser = await User.findByUsername(targetUsername);
+    if (!targetUser) {
+      return await bot.sendMessage(chatId, `❌ @${targetUsername} bulunamadı.`);
+    }
+
+    await User.updateCredits(targetUser.telegram_id, amount);
+    const updated = await User.findById(targetUser.telegram_id);
+
+    await bot.sendMessage(chatId,
+      `✅ <b>Kredi Eklendi</b>\n👤 @${escapeHtml(targetUsername)}\n➕ ${amount} hak eklendi\n📊 Yeni bakiye: <b>${updated.credits}</b>`,
+      { parse_mode: 'HTML' }
+    );
+
+    try {
+      await bot.sendMessage(targetUser.telegram_id,
+        `🎁 Hesabınıza <b>${amount} hak</b> eklendi!\n📊 Yeni bakiyeniz: <b>${updated.credits}</b>`,
+        { parse_mode: 'HTML' }
+      );
+    } catch (e) {}
+
+    console.log(`➕ Admin kredi ekledi: @${targetUsername} +${amount}`);
+  } catch (error) {
+    await bot.sendMessage(chatId, `❌ Hata: ${error.message}`);
+  }
+});
+
+bot.onText(/\/removecredits(?: (.+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || '';
+
+  if (username !== BOT_OWNER) {
+    return await bot.sendMessage(chatId, '⛔ Bu komut sadece bot sahibine özeldir.');
+  }
+
+  const args = match[1]?.trim().split(/\s+/);
+  if (!args || args.length < 2) {
+    return await bot.sendMessage(chatId, '❌ Kullanım: /removecredits @kullanıcı 5');
+  }
+
+  const targetUsername = args[0].replace('@', '');
+  const amount = parseInt(args[1]);
+
+  if (isNaN(amount) || amount <= 0) {
+    return await bot.sendMessage(chatId, '❌ Geçerli bir sayı girin. Örnek: /removecredits @kullanıcı 5');
+  }
+
+  try {
+    const targetUser = await User.findByUsername(targetUsername);
+    if (!targetUser) {
+      return await bot.sendMessage(chatId, `❌ @${targetUsername} bulunamadı.`);
+    }
+
+    await User.updateCredits(targetUser.telegram_id, -amount);
+    const updated = await User.findById(targetUser.telegram_id);
+
+    await bot.sendMessage(chatId,
+      `✅ <b>Kredi Düşüldü</b>\n👤 @${escapeHtml(targetUsername)}\n➖ ${amount} hak düşüldü\n📊 Yeni bakiye: <b>${Math.max(0, updated.credits)}</b>`,
+      { parse_mode: 'HTML' }
+    );
+
+    console.log(`➖ Admin kredi düşürdü: @${targetUsername} -${amount}`);
+  } catch (error) {
+    await bot.sendMessage(chatId, `❌ Hata: ${error.message}`);
+  }
+});
+
+bot.onText(/\/ban(?: (.+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || '';
+
+  if (username !== BOT_OWNER) {
+    return await bot.sendMessage(chatId, '⛔ Bu komut sadece bot sahibine özeldir.');
+  }
+
+  const targetUsername = match[1]?.trim().replace('@', '');
+  if (!targetUsername) {
+    return await bot.sendMessage(chatId, '❌ Kullanım: /ban @kullanıcı');
+  }
+
+  try {
+    const targetUser = await User.findByUsername(targetUsername);
+    if (!targetUser) {
+      return await bot.sendMessage(chatId, `❌ @${targetUsername} bulunamadı.`);
+    }
+
+    if (targetUser.is_banned === 1) {
+      return await bot.sendMessage(chatId, `⚠️ @${targetUsername} zaten banlı.`);
+    }
+
+    await User.banUser(targetUser.telegram_id);
+
+    await bot.sendMessage(chatId,
+      `🔨 <b>Kullanıcı Banlandı</b>\n👤 @${escapeHtml(targetUsername)}\n🆔 ID: ${targetUser.telegram_id}`,
+      { parse_mode: 'HTML' }
+    );
+
+    try {
+      await bot.sendMessage(targetUser.telegram_id, '⛔ Hesabınız yasaklanmıştır. Destek için bot sahibiyle iletişime geçin.');
+    } catch (e) {}
+
+    console.log(`🔨 BAN: @${targetUsername} (${targetUser.telegram_id})`);
+  } catch (error) {
+    await bot.sendMessage(chatId, `❌ Hata: ${error.message}`);
+  }
+});
+
+bot.onText(/\/unban(?: (.+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || '';
+
+  if (username !== BOT_OWNER) {
+    return await bot.sendMessage(chatId, '⛔ Bu komut sadece bot sahibine özeldir.');
+  }
+
+  const targetUsername = match[1]?.trim().replace('@', '');
+  if (!targetUsername) {
+    return await bot.sendMessage(chatId, '❌ Kullanım: /unban @kullanıcı');
+  }
+
+  try {
+    const targetUser = await User.findByUsername(targetUsername);
+    if (!targetUser) {
+      return await bot.sendMessage(chatId, `❌ @${targetUsername} bulunamadı.`);
+    }
+
+    if (targetUser.is_banned === 0) {
+      return await bot.sendMessage(chatId, `⚠️ @${targetUsername} zaten banlı değil.`);
+    }
+
+    await User.unbanUser(targetUser.telegram_id);
+
+    await bot.sendMessage(chatId,
+      `✅ <b>Ban Kaldırıldı</b>\n👤 @${escapeHtml(targetUsername)}\n🆔 ID: ${targetUser.telegram_id}`,
+      { parse_mode: 'HTML' }
+    );
+
+    try {
+      await bot.sendMessage(targetUser.telegram_id, '✅ Hesabınızın yasağı kaldırılmıştır. Botu tekrar kullanabilirsiniz!');
+    } catch (e) {}
+
+    console.log(`✅ UNBAN: @${targetUsername} (${targetUser.telegram_id})`);
+  } catch (error) {
+    await bot.sendMessage(chatId, `❌ Hata: ${error.message}`);
+  }
+});
+
+bot.onText(/\/broadcast(?: ([\s\S]+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || '';
+
+  if (username !== BOT_OWNER) {
+    return await bot.sendMessage(chatId, '⛔ Bu komut sadece bot sahibine özeldir.');
+  }
+
+  const message = match[1]?.trim();
+  if (!message) {
+    return await bot.sendMessage(chatId, '❌ Kullanım: /broadcast Merhaba! Yeni özellikler eklendi.');
+  }
+
+  try {
+    const allUsers = await User.getAllUsers();
+    const activeUsers = allUsers.filter(u => u.is_banned === 0);
+
+    global.pendingBroadcast = message;
+
+    const confirmKeyboard = {
+      inline_keyboard: [[
+        { text: `✅ Gönder (${activeUsers.length} kullanıcı)`, callback_data: `broadcast_confirm_${Date.now()}` },
+        { text: '❌ İptal', callback_data: 'broadcast_cancel' }
+      ]]
+    };
+
+    await bot.sendMessage(chatId,
+      `📢 <b>Broadcast Önizleme</b>\n\n${escapeHtml(message)}\n\n` +
+      `👥 Gönderilecek: <b>${activeUsers.length}</b> kullanıcı\n⚠️ Banlı kullanıcılar hariç tutuldu.`,
+      { parse_mode: 'HTML', reply_markup: confirmKeyboard }
+    );
+  } catch (error) {
+    await bot.sendMessage(chatId, `❌ Hata: ${error.message}`);
+  }
 });
 
 // ========== HANDLER FONKSİYONLARI ==========
@@ -583,6 +847,13 @@ async function handleHelp(chatId, lang) {
 
 bot.on('photo', async (msg) => {
   const chatId = msg.chat.id;
+
+  // Ban kontrolü
+  const banned = await User.isBanned(msg.from.id);
+  if (banned) {
+    return await bot.sendMessage(chatId, '⛔ Hesabınız yasaklanmıştır.');
+  }
+
   const user = await User.findById(msg.from.id);
   const lang = getUserLanguage(user);
   
@@ -625,7 +896,6 @@ async function processPrompt(msg, user, lang) {
     return await bot.sendMessage(chatId, `❌ ${t(lang, 'generate.no_credits')}!`, { reply_markup: getMainMenuKeyboard(lang) });
   }
   
-  // Kuyruğa ekle
   const queueResult = queueEnqueue(msg.from.id, { prompt, user });
   
   if (!queueResult.success && queueResult.message === 'already_in_queue') {
@@ -650,8 +920,7 @@ async function processPrompt(msg, user, lang) {
   let inputMessageId = null;
   
   try {
-    // Kuyruk bekle
-    let maxWait = 300; // 5 dakika max
+    let maxWait = 300;
     let waited = 0;
     while (waited < maxWait) {
       const item = queueDequeue();
@@ -670,7 +939,6 @@ async function processPrompt(msg, user, lang) {
       }
     }
     
-    // İşlem başladı
     try {
       await bot.editMessageText(
         `⏳ <b>${t(lang, 'generate.processing_started')}</b>\n\n📝 "${escapeHtml(prompt)}"`,
@@ -774,6 +1042,53 @@ bot.on('callback_query', async (query) => {
       { parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(newLang) }
     );
     
+    try { await bot.deleteMessage(chatId, query.message.message_id); } catch (e) {}
+    return;
+  }
+
+  // Broadcast onayla
+  if (data.startsWith('broadcast_confirm_')) {
+    const adminUser = await User.findById(userId);
+    if (adminUser?.username !== BOT_OWNER) return;
+
+    if (!global.pendingBroadcast) {
+      return await bot.answerCallbackQuery(query.id, { text: '❌ Broadcast mesajı bulunamadı.', show_alert: true });
+    }
+
+    await bot.answerCallbackQuery(query.id, { text: '📢 Gönderiliyor...' });
+
+    const broadcastMessage = global.pendingBroadcast;
+    global.pendingBroadcast = null;
+
+    const allUsers = await User.getAllUsers();
+    const activeUsers = allUsers.filter(u => u.is_banned === 0);
+
+    let sent = 0, failed = 0;
+
+    for (const u of activeUsers) {
+      try {
+        await bot.sendMessage(u.telegram_id,
+          `📢 <b>Duyuru</b>\n\n${escapeHtml(broadcastMessage)}`,
+          { parse_mode: 'HTML' }
+        );
+        sent++;
+        await new Promise(r => setTimeout(r, 50));
+      } catch (e) {
+        failed++;
+      }
+    }
+
+    await bot.sendMessage(chatId,
+      `✅ <b>Broadcast Tamamlandı</b>\n📤 Gönderildi: <b>${sent}</b>\n❌ Başarısız: <b>${failed}</b>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  // Broadcast iptal
+  if (data === 'broadcast_cancel') {
+    global.pendingBroadcast = null;
+    await bot.answerCallbackQuery(query.id, { text: '❌ İptal edildi.' });
     try { await bot.deleteMessage(chatId, query.message.message_id); } catch (e) {}
     return;
   }
