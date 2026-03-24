@@ -729,7 +729,7 @@ async function handleReferral(chatId, user, lang) {
   await bot.sendMessage(chatId, 
     `🔗 <b>${t(lang, 'referral.title')}</b>\n\n` +
     `📋 ${t(lang, 'referral.code')}: <code>${code}</code>\n` +
-    `🔗 ${t(lang, 'referral.link')}:\n<code>${link}</code>\n\n` +
+    `🔗 ${t(lang, 'referral.link')}:\n${link}\n\n` +
     `💰 ${t(lang, 'referral.how_works')}\n` +
     `• ${t(lang, 'referral.link_comer')}: +1 | ${t(lang, 'referral.you_get')}: +1\n\n` +
     `📊 ${t(lang, 'referral.total_referrals')}: ${stats.total_referrals}`,
