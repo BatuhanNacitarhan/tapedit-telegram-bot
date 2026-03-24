@@ -68,6 +68,12 @@ try {
     db.exec('ALTER TABLE users ADD COLUMN last_daily_reward DATETIME DEFAULT NULL');
     console.log('✅ last_daily_reward sütunu eklendi');
   }
+    // is_banned sütunu ekle
+  const bannedCol = columns.find(col => col.name === 'is_banned');
+  if (!bannedCol) {
+    db.exec('ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0');
+    console.log('✅ is_banned sütunu eklendi');
+  }
 } catch (error) {
   console.log('⚠️ Sütun kontrolü:', error.message);
 }
