@@ -119,17 +119,14 @@ class User {
     try {
       const user = await this.findById(telegramId);
       
-      // Kullanıcı yoksa
       if (!user) {
         return { canClaim: false, reason: 'user_not_found' };
       }
       
-      // VIP kullanıcılar için
       if (user.is_unlimited === 1) {
         return { canClaim: false, reason: 'vip' };
       }
       
-      // Hiç ödül almamışsa
       if (!user.last_daily_reward) {
         return { canClaim: true };
       }
@@ -138,12 +135,10 @@ class User {
       const now = new Date();
       const hoursSinceLastReward = (now - lastReward) / (1000 * 60 * 60);
       
-      // 24 saat geçmişse
       if (hoursSinceLastReward >= 24) {
         return { canClaim: true };
       }
       
-      // Süre dolmamış
       const nextRewardTime = new Date(lastReward.getTime() + 24 * 60 * 60 * 1000);
       const remainingMs = nextRewardTime - now;
       const remainingHours = Math.floor(remainingMs / (1000 * 60 * 60));
@@ -168,7 +163,6 @@ class User {
       return { success: false, ...check };
     }
     
-    // Kredi ekle
     await dbHelper.run(
       `UPDATE users 
        SET credits = credits + 1, 
@@ -184,6 +178,75 @@ class User {
     return { 
       success: true, 
       newCredits: user.credits 
+    };
+  }
+
+  // ========== BAN FONKSİYONLARI ==========
+
+  static async banUser(telegramId) {
+    await dbHelper.run(
+      'UPDATE users SET is_banned = 1 WHERE telegram_id = ?',
+      [telegramId]
+    );
+    console.log(`🔨 BAN: ${telegramId}`);
+  }
+
+  static async unbanUser(telegramId) {
+    await dbHelper.run(
+      'UPDATE users SET is_banned = 0 WHERE telegram_id = ?',
+      [telegramId]
+    );
+    console.log(`✅ UNBAN: ${telegramId}`);
+  }
+
+  static async isBanned(telegramId) {
+    const user = await this.findById(telegramId);
+    return user && user.is_banned === 1;
+  }
+
+  // ========== ADMİN FONKSİYONLARI ==========
+
+  static async getAllUsers() {
+    return await dbHelper.all(
+      'SELECT telegram_id, username, credits, is_banned, is_unlimited, created_at, last_active FROM users ORDER BY created_at DESC',
+      []
+    );
+  }
+
+  static async getAdminStats() {
+    const totalUsers = await dbHelper.get('SELECT COUNT(*) as c FROM users', []);
+    const todayUsers = await dbHelper.get(
+      "SELECT COUNT(*) as c FROM users WHERE DATE(created_at) = DATE('now')",
+      []
+    );
+    const bannedUsers = await dbHelper.get('SELECT COUNT(*) as c FROM users WHERE is_banned = 1', []);
+    const totalGenerations = await dbHelper.get('SELECT COUNT(*) as c FROM generations', []);
+    const todayGenerations = await dbHelper.get(
+      "SELECT COUNT(*) as c FROM generations WHERE DATE(created_at) = DATE('now')",
+      []
+    );
+    const completedGenerations = await dbHelper.get(
+      "SELECT COUNT(*) as c FROM generations WHERE status = 'completed'",
+      []
+    );
+    const topUsers = await dbHelper.all(
+      `SELECT u.username, COUNT(g.id) as gen_count 
+       FROM users u 
+       LEFT JOIN generations g ON u.telegram_id = g.user_id 
+       GROUP BY u.telegram_id 
+       ORDER BY gen_count DESC 
+       LIMIT 5`,
+      []
+    );
+
+    return {
+      totalUsers: totalUsers?.c || 0,
+      todayUsers: todayUsers?.c || 0,
+      bannedUsers: bannedUsers?.c || 0,
+      totalGenerations: totalGenerations?.c || 0,
+      todayGenerations: todayGenerations?.c || 0,
+      completedGenerations: completedGenerations?.c || 0,
+      topUsers: topUsers || []
     };
   }
   
