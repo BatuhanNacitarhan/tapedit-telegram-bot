@@ -8,8 +8,11 @@ class TapeditAutomation {
   constructor() { this.browser = null; }
 
   async initBrowser() {
+    // Browser sağlık kontrolü
     if (this.browser) {
-      try { await this.browser.version(); return; } catch (_) { this.browser = null; }
+      try { await this.browser.version(); return; } catch (_) {
+        this.browser = null;
+      }
     }
     this.browser = await chromium.launch({
       headless: true,
@@ -19,7 +22,7 @@ class TapeditAutomation {
     console.log('✅ Browser başlatıldı');
   }
 
-  // Her istekte temiz context + sayfa açılır — cache/state sorunu olmaz
+  // Her istek için temiz context — cache/state sorunu olmaz
   async newPage() {
     await this.initBrowser();
     const context = await this.browser.newContext({
@@ -27,13 +30,10 @@ class TapeditAutomation {
       viewport: { width: 1280, height: 900 },
       acceptDownloads: true,
       ignoreHTTPSErrors: true,
-      // Cache tamamen kapalı — response'lar her zaman network'ten geçer
-      bypassCSP: true
     });
-    // Cache'i devre dışı bırak
-    await context.route('**/*', route => route.continue());
     const page = await context.newPage();
-    await page.setCacheEnabled(false);
+    // Playwright'ta cache devre dışı — route ile yapılır
+    await context.route('**/*', route => route.continue({ headers: { ...route.request().headers(), 'Cache-Control': 'no-cache' } }));
     return { page, context };
   }
 
@@ -44,6 +44,12 @@ class TapeditAutomation {
     let   context     = null;
 
     try {
+      // Her retry'da browser tamamen sıfırla
+      if (retryCount > 0) {
+        try { if (this.browser) await this.browser.close(); } catch (_) {}
+        this.browser = null;
+      }
+
       ({ page, context } = await this.newPage());
 
       console.log('🌐 Tapedit.ai bağlanılıyor...');
@@ -98,7 +104,7 @@ class TapeditAutomation {
   _buildResultPromise(page) {
     return Promise.race([
 
-      // YÖNTEM 1: Network response — Generate anında tetiklenir
+      // YÖNTEM 1: Network response — en hızlı, Generate anında tetiklenir
       page.waitForResponse(
         (res) => {
           const url = res.url();
