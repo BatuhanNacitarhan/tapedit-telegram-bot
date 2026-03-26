@@ -3,7 +3,6 @@ const axios = require('axios');
 
 const SITE_URL    = 'https://tapedit.ai';
 const MAX_WAIT_MS = 180_000;
-const POLL_MS     = 2_000;
 
 class TapeditAutomation {
   constructor() {
@@ -45,20 +44,6 @@ class TapeditAutomation {
       await this.initBrowser();
       page = await this.context.newPage();
 
-      // Tüm image response URL'lerini yakala
-      const networkImages = [];
-      page.on('response', async (res) => {
-        try {
-          const url = res.url();
-          const ct  = res.headers()['content-type'] || '';
-          if (ct.startsWith('image/') &&
-              (url.includes('pbsimgs') || url.includes('/edit/single') || url.includes('/output/'))) {
-            networkImages.push(url);
-            console.log(`🌐 Network görsel yakalandı: ${url}`);
-          }
-        } catch (_) {}
-      });
-
       console.log('🌐 Tapedit.ai bağlanılıyor...');
       await page.goto(SITE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.waitForTimeout(2000);
@@ -76,7 +61,8 @@ class TapeditAutomation {
       await this._clickGenerate(page);
       console.log('⏳ Görsel oluşturuluyor...');
 
-      const resultUrl = await this._waitForResult(page, networkImages);
+      // ── Sonucu event-driven yakala ───────────────────────────
+      const resultUrl = await this._waitForResult(page);
       if (!resultUrl) throw new Error('Sonuç görseli bulunamadı (timeout)');
 
       console.log(`📥 İndiriliyor: ${resultUrl}`);
@@ -103,82 +89,59 @@ class TapeditAutomation {
     }
   }
 
-  async _waitForResult(page, networkImages) {
-    const deadline = Date.now() + MAX_WAIT_MS;
+  // ================================================================
+  //  EVENT-DRIVEN sonuç bekleme — polling YOK
+  //  Görsel geldiği anda Promise resolve olur
+  // ================================================================
+  async _waitForResult(page) {
 
-    while (Date.now() < deadline) {
-      const remaining = Math.round((deadline - Date.now()) / 1000);
+    // ── Yarış: kim önce resolve ederse o kazanır ─────────────
+    const result = await Promise.race([
 
-      // ── Strateji 1: alt="Generated result" — DEV TOOLS'DAN GÖRÜLEN KESİN SELECTOR ──
-      const altResult = await page.evaluate(() => {
-        // Tam eşleşme
-        let img = document.querySelector('img[alt="Generated result"]');
-        if (img && img.src && img.src.startsWith('http')) return img.src;
-
-        // Kısmi eşleşme — site dili değişirse
-        const all = Array.from(document.querySelectorAll('img'));
-        for (const i of all) {
-          const alt = (i.alt || '').toLowerCase();
-          if (alt.includes('generated') || alt.includes('result') || alt.includes('output')) {
-            if (i.src && i.src.startsWith('http') && !i.src.includes('/logo') && !i.src.includes('/icon')) {
-              return i.src;
-            }
-          }
-        }
-        return null;
-      }).catch(() => null);
-
-      if (altResult) {
-        console.log(`✅ [S1] alt="Generated result": ${altResult}`);
-        return altResult;
-      }
-
-      // ── Strateji 2: pbsimgs.sbs veya /edit/single/ URL'si olan img ──
-      const domResult = await page.evaluate(() => {
-        const all = Array.from(document.querySelectorAll('img'));
-        let best = null, bestArea = 0;
-        for (const img of all) {
-          const src = img.src || '';
-          if (!src.startsWith('http')) continue;
-          if (src.includes('pbsimgs') || src.includes('/edit/single/') || src.includes('/output/')) {
-            const area = (img.naturalWidth || img.width || 0) * (img.naturalHeight || img.height || 0);
-            if (area > bestArea) { bestArea = area; best = src; }
-          }
-        }
-        return best;
-      }).catch(() => null);
-
-      if (domResult) {
-        console.log(`✅ [S2] DOM pbsimgs/edit bulundu: ${domResult}`);
-        return domResult;
-      }
-
-      // ── Strateji 3: Network'ten yakalanan ──
-      if (networkImages.length > 0) {
-        const url = networkImages[networkImages.length - 1];
-        console.log(`✅ [S3] Network: ${url}`);
+      // YÖNTEM 1: Network response — pbsimgs.sbs veya /edit/single/ URL'si
+      // Generate'e bastıktan sonra sunucu görseli döndürdüğü AN tetiklenir
+      page.waitForResponse(
+        (res) => {
+          const url = res.url();
+          const ct  = res.headers()['content-type'] || '';
+          return ct.startsWith('image/') &&
+                 (url.includes('pbsimgs') || url.includes('/edit/single/') || url.includes('/output/'));
+        },
+        { timeout: MAX_WAIT_MS }
+      ).then((res) => {
+        const url = res.url();
+        console.log(`✅ [Network] Görsel geldi: ${url}`);
         return url;
-      }
+      }).catch(() => null),
 
-      console.log(`⏳ Bekleniyor... ${remaining}s kaldı`);
-      await page.waitForTimeout(POLL_MS);
-    }
+      // YÖNTEM 2: DOM'da img[alt="Generated result"] görünür görünmez
+      // MutationObserver ile — DOM değiştiği AN tetiklenir
+      page.waitForFunction(
+        () => {
+          // Kesin selector
+          const img = document.querySelector('img[alt="Generated result"]');
+          if (img && img.src && img.src.startsWith('http') && img.naturalWidth > 0) return img.src;
 
-    // ── Son çare: sayfadaki en büyük dış görsel ──
-    console.log('🔍 Son çare: en büyük görsel aranıyor...');
-    return await page.evaluate(() => {
-      const all = Array.from(document.querySelectorAll('img'));
-      let best = null, bestArea = 0;
-      for (const img of all) {
-        const src = img.src || '';
-        if (!src.startsWith('http')) continue;
-        // Logo/ikon türü görselleri atla
-        if (src.includes('/logo') || src.includes('/icon') || src.includes('favicon')) continue;
-        const area = (img.naturalWidth || img.width || 0) * (img.naturalHeight || img.height || 0);
-        if (area > bestArea && area > 50000) { bestArea = area; best = src; }
-      }
-      return best;
-    }).catch(() => null);
+          // pbsimgs veya edit/single içeren herhangi bir img
+          const all = Array.from(document.querySelectorAll('img'));
+          for (const i of all) {
+            const src = i.src || '';
+            if ((src.includes('pbsimgs') || src.includes('/edit/single/') || src.includes('/output/')) &&
+                i.naturalWidth > 0) return src;
+          }
+          return false;
+        },
+        { timeout: MAX_WAIT_MS, polling: 500 } // polling: 500 = her 0.5sn kontrol et
+      ).then((handle) => handle.jsonValue()).then((url) => {
+        console.log(`✅ [DOM] Görsel bulundu: ${url}`);
+        return url;
+      }).catch(() => null),
+
+      // YÖNTEM 3: Timeout fallback — 180s sonra null döner
+      new Promise(r => setTimeout(() => r(null), MAX_WAIT_MS))
+    ]);
+
+    return result;
   }
 
   async _uploadImage(page, imagePath) {
@@ -209,7 +172,6 @@ class TapeditAutomation {
       'input[placeholder*="edit" i]',
       'input[placeholder*="Enter" i]',
       '[class*="prompt"] textarea',
-      '[class*="Prompt"] textarea',
       '[contenteditable="true"]'
     ];
     for (const sel of sels) {
@@ -245,8 +207,7 @@ class TapeditAutomation {
       } catch (_) {}
     }
     const keywords = ['generate','create','edit','apply','submit','run'];
-    const buttons  = await page.$$('button');
-    for (const btn of buttons) {
+    for (const btn of await page.$$('button')) {
       try {
         const text = (await btn.textContent()).toLowerCase().trim();
         if (keywords.some(k => text.includes(k)) && !(await btn.isDisabled())) {
