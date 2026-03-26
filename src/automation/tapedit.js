@@ -5,42 +5,46 @@ const SITE_URL    = 'https://tapedit.ai';
 const MAX_WAIT_MS = 180_000;
 
 class TapeditAutomation {
-  constructor() { this.browser = null; this.context = null; }
+  constructor() { this.browser = null; }
 
   async initBrowser() {
     if (this.browser) {
-      try { await this.browser.version(); return; } catch (_) {
-        this.browser = null; this.context = null;
-      }
+      try { await this.browser.version(); return; } catch (_) { this.browser = null; }
     }
     this.browser = await chromium.launch({
       headless: true,
       args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage',
              '--disable-gpu','--single-process','--no-zygote']
     });
-    this.context = await this.browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 900 },
-      acceptDownloads: true,
-      ignoreHTTPSErrors: true
-    });
     console.log('✅ Browser başlatıldı');
   }
 
-  async resetBrowser() {
-    try { if (this.browser) await this.browser.close(); } catch (_) {}
-    this.browser = null; this.context = null;
+  // Her istekte temiz context + sayfa açılır — cache/state sorunu olmaz
+  async newPage() {
     await this.initBrowser();
+    const context = await this.browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      viewport: { width: 1280, height: 900 },
+      acceptDownloads: true,
+      ignoreHTTPSErrors: true,
+      // Cache tamamen kapalı — response'lar her zaman network'ten geçer
+      bypassCSP: true
+    });
+    // Cache'i devre dışı bırak
+    await context.route('**/*', route => route.continue());
+    const page = await context.newPage();
+    await page.setCacheEnabled(false);
+    return { page, context };
   }
 
   async generateImage(imagePath, prompt, retryCount = 0) {
     const MAX_RETRIES = 2;
     const startTime   = Date.now();
     let   page        = null;
+    let   context     = null;
 
     try {
-      await this.initBrowser();
-      page = await this.context.newPage();
+      ({ page, context } = await this.newPage());
 
       console.log('🌐 Tapedit.ai bağlanılıyor...');
       await page.goto(SITE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -55,15 +59,13 @@ class TapeditAutomation {
       await this._enterPrompt(page, prompt);
       await page.waitForTimeout(500);
 
-      // ── KRİTİK: listener'ları Generate'den ÖNCE kur ─────────
-      // Böylece Generate anında gelen response asla kaçırılmaz
+      // ── Listener Generate'den ÖNCE kurulur ──────────────────
       const resultPromise = this._buildResultPromise(page);
 
       console.log('🔘 Generate tıklanıyor...');
       await this._clickGenerate(page);
       console.log('⏳ Görsel oluşturuluyor...');
 
-      // Şimdi bekle — listener zaten hazır
       const resultUrl = await resultPromise;
       if (!resultUrl) throw new Error('Sonuç görseli bulunamadı (timeout)');
 
@@ -74,15 +76,18 @@ class TapeditAutomation {
 
       const totalTime = (Date.now() - startTime) / 1000;
       console.log(`✅ TAMAMLANDI! ${totalTime.toFixed(1)}s | ${(imageBuffer.length/1024).toFixed(1)}KB`);
+
       await page.close().catch(() => {});
+      await context.close().catch(() => {});
       return { success: true, imageBuffer, processingTime: totalTime };
 
     } catch (error) {
       console.error(`❌ Hata (deneme ${retryCount + 1}): ${error.message}`);
-      if (page) await page.close().catch(() => {});
+      if (page)    await page.close().catch(() => {});
+      if (context) await context.close().catch(() => {});
+
       if (retryCount < MAX_RETRIES) {
         console.log(`🔄 ${retryCount + 1}. retry...`);
-        await this.resetBrowser();
         await new Promise(r => setTimeout(r, 3000));
         return this.generateImage(imagePath, prompt, retryCount + 1);
       }
@@ -90,13 +95,10 @@ class TapeditAutomation {
     }
   }
 
-  // ── Listener'ları Generate'den ÖNCE kur ──────────────────────
-  // Promise hazır ama henüz beklemiyor — Generate'den sonra await edilecek
   _buildResultPromise(page) {
     return Promise.race([
 
-      // YÖNTEM 1: Network response — en hızlı yol
-      // pbsimgs.sbs veya /edit/single/ olan image response'u yakala
+      // YÖNTEM 1: Network response — Generate anında tetiklenir
       page.waitForResponse(
         (res) => {
           const url = res.url();
@@ -113,13 +115,12 @@ class TapeditAutomation {
         return url;
       }).catch(() => null),
 
-      // YÖNTEM 2: DOM — img[alt="Generated result"] veya pbsimgs URL'li img
+      // YÖNTEM 2: DOM — img[alt="Generated result"] veya pbsimgs URL
       page.waitForFunction(
         () => {
           const img = document.querySelector('img[alt="Generated result"]');
           if (img && img.src && img.src.startsWith('http') && img.naturalWidth > 0)
             return img.src;
-
           for (const i of document.querySelectorAll('img')) {
             const src = i.src || '';
             if ((src.includes('pbsimgs') ||
@@ -145,7 +146,6 @@ class TapeditAutomation {
       const inp = await page.$('input[type="file"]');
       if (inp) { await inp.setInputFiles(imagePath); console.log('✅ File input yüklendi'); return; }
     } catch (_) {}
-
     for (const sel of ['[class*="upload"]','[class*="Upload"]','[class*="drop"]','label']) {
       try {
         const el = await page.$(sel); if (!el) continue;
@@ -163,7 +163,6 @@ class TapeditAutomation {
       'input[placeholder*="prompt" i]',
       'input[placeholder*="describe" i]',
       'input[placeholder*="edit" i]',
-      'input[placeholder*="Enter" i]',
       '[contenteditable="true"]'
     ]) {
       try {
@@ -211,7 +210,6 @@ class TapeditAutomation {
       const buf = Buffer.from(res.data, 'binary');
       if (buf.length > 5000) { console.log('✅ Axios indirildi'); return buf; }
     } catch (e) { console.log(`⚠️ Axios: ${e.message}`); }
-
     try {
       const b64 = await page.evaluate(async u => {
         const r = await fetch(u, { credentials: 'include' });
@@ -227,13 +225,12 @@ class TapeditAutomation {
         if (buf.length > 5000) { console.log('✅ Fetch indirildi'); return buf; }
       }
     } catch (e) { console.log(`⚠️ Fetch: ${e.message}`); }
-
     return null;
   }
 
   async close() {
     try { if (this.browser) await this.browser.close(); } catch (_) {}
-    this.browser = null; this.context = null;
+    this.browser = null;
   }
 }
 
